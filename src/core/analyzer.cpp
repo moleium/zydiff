@@ -99,6 +99,13 @@ auto FunctionAnalyzer::AnalyzeFunction(uint64_t start_address) -> Function {
   function.start_address = start_address;
   function.basic_blocks = FindBasicBlocks(start_address);
 
+  // Calculate fingerprint
+  size_t total_instructions = 0;
+  for (const auto& block : function.basic_blocks) {
+    total_instructions += block.instructions.size();
+  }
+  function.fingerprint = {function.basic_blocks.size(), total_instructions};
+
   // Find the highest address in any basic block for the function end
   function.end_address = start_address;
   for (const auto &block : function.basic_blocks) {

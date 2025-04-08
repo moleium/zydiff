@@ -1,6 +1,10 @@
 #include "differ.h"
 #include <algorithm>
 #include <unordered_map>
+#include <set>
+#include <map>
+#include <vector>
+#include <tuple>
 
 BinaryDiffer::BinaryDiffer(const std::string& primary_path, const std::string& secondary_path)
     : primary_(std::make_unique<BinaryParser>(primary_path)),
@@ -202,55 +206,85 @@ auto BinaryDiffer::MatchFunctions(
     const std::vector<FunctionAnalyzer::Function> &secondary_funcs)
     -> std::vector<
         std::pair<FunctionAnalyzer::Function, FunctionAnalyzer::Function>> {
-  std::vector<std::pair<FunctionAnalyzer::Function, FunctionAnalyzer::Function>>
-      matches;
 
-  std::vector<std::tuple<double, size_t, size_t, std::vector<std::string>>>
-      similarities;
-  for (size_t i = 0; i < primary_funcs.size(); i++) {
-    for (size_t j = 0; j < secondary_funcs.size(); j++) {
-      auto size_ratio =
-          static_cast<double>(primary_funcs[i].basic_blocks.size()) /
-          secondary_funcs[j].basic_blocks.size();
-      if (size_ratio < 0.5 || size_ratio > 2.0) {
-        continue;
-      }
+  // Group functions by fingerprint
+  std::unordered_map<Fingerprint, std::vector<const FunctionAnalyzer::Function*>, FingerprintHash> primary_map;
+  for (const auto& func : primary_funcs) {
+    primary_map[func.fingerprint].push_back(&func);
+  }
 
-      LOG("\nComparing functions - Primary[%zu](0x%llx) vs "
-             "Secondary[%zu](0x%llx)\n",
-             i, primary_funcs[i].start_address, j,
-             secondary_funcs[j].start_address);
-      
-      std::vector<std::string> diff_details;
-      auto similarity = CalculateFunctionSimilarity(
-          primary_funcs[i], secondary_funcs[j], diff_details);
-      LOG("Overall similarity: %f\n", similarity);
-      if (similarity > 0.7) {
-        similarities.emplace_back(similarity, i, j, std::move(diff_details));
+  std::unordered_map<Fingerprint, std::vector<const FunctionAnalyzer::Function*>, FingerprintHash> secondary_map;
+  for (const auto& func : secondary_funcs) {
+    secondary_map[func.fingerprint].push_back(&func);
+  }
+
+  std::vector<std::tuple<double, size_t, size_t, std::vector<std::string>>> similarities;
+  std::vector<const FunctionAnalyzer::Function*> p_funcs_ptrs;
+  std::vector<const FunctionAnalyzer::Function*> s_funcs_ptrs;
+
+  // Compare functions only within the same fingerprint bucket
+  for (auto const& [fingerprint, p_bucket] : primary_map) {
+    auto s_it = secondary_map.find(fingerprint);
+    if (s_it != secondary_map.end()) {
+      const auto& s_bucket = s_it->second;
+      LOG("\nComparing bucket with fingerprint (%zu blocks, %zu instructions): %zu primary vs %zu secondary functions\n", 
+             fingerprint.first, fingerprint.second, p_bucket.size(), s_bucket.size());
+
+      // Store pointers for indexing within the bucket comparison logic
+      p_funcs_ptrs.assign(p_bucket.begin(), p_bucket.end());
+      s_funcs_ptrs.assign(s_bucket.begin(), s_bucket.end());
+
+      // Original comparison logic, but only within the bucket
+      for (size_t i = 0; i < p_funcs_ptrs.size(); ++i) {
+        for (size_t j = 0; j < s_funcs_ptrs.size(); ++j) {
+          LOG("  Comparing P[idx %zu](0x%llx) vs S[idx %zu](0x%llx)\n",
+                 i, p_funcs_ptrs[i]->start_address,
+                 j, s_funcs_ptrs[j]->start_address);
+
+          std::vector<std::string> diff_details;
+          double similarity = CalculateFunctionSimilarity(
+              *p_funcs_ptrs[i], *s_funcs_ptrs[j], diff_details);
+          LOG("  Similarity: %f\n", similarity);
+
+          if (similarity > 0.7) {
+            size_t original_primary_idx = std::distance(primary_funcs.data(), p_funcs_ptrs[i]);
+            size_t original_secondary_idx = std::distance(secondary_funcs.data(), s_funcs_ptrs[j]);
+
+            similarities.emplace_back(similarity, original_primary_idx, original_secondary_idx, std::move(diff_details));
+          }
+        }
       }
     }
   }
 
+  // Sort all potential matches found across all buckets by similarity
   std::sort(
       similarities.begin(), similarities.end(),
       std::greater<
           std::tuple<double, size_t, size_t, std::vector<std::string>>>());
 
-  std::set<size_t> matched_primary, matched_secondary;
+  // Build final matches list
+  // 1:1 mapping
+  std::vector<std::pair<FunctionAnalyzer::Function, FunctionAnalyzer::Function>>
+      matches;
+  std::set<size_t> matched_primary_indices, matched_secondary_indices;
   for (const auto &[similarity, primary_idx, secondary_idx, details] :
        similarities) {
-    if (matched_primary.contains(primary_idx) ||
-        matched_secondary.contains(secondary_idx)) {
+    if (matched_primary_indices.contains(primary_idx) ||
+        matched_secondary_indices.contains(secondary_idx)) {
       continue;
     }
 
-    auto primary = primary_funcs[primary_idx];
-    primary.similarity_score = similarity;
-    primary.diff_details = details;
-    matches.emplace_back(std::move(primary), secondary_funcs[secondary_idx]);
-    matched_primary.insert(primary_idx);
-    matched_secondary.insert(secondary_idx);
+    // Create a copy and add metadata
+    auto primary_copy = primary_funcs[primary_idx]; 
+    primary_copy.similarity_score = similarity;
+    primary_copy.diff_details = details;
+    
+    matches.emplace_back(std::move(primary_copy), secondary_funcs[secondary_idx]);
+    matched_primary_indices.insert(primary_idx);
+    matched_secondary_indices.insert(secondary_idx);
   }
 
+  LOG("Matching complete. Found %zu matches.\n", matches.size());
   return matches;
 }

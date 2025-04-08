@@ -7,6 +7,18 @@
 #include <unordered_map>
 #include <set>
 #include <optional>
+#include <utility>
+#include <functional>
+
+using Fingerprint = std::pair<size_t, size_t>;
+
+struct FingerprintHash {
+  std::size_t operator()(const Fingerprint &fp) const {
+    auto hash1 = std::hash<size_t>{}(fp.first);
+    auto hash2 = std::hash<size_t>{}(fp.second);
+    return hash1 ^ (hash2 + 0x9e3779b9 + (hash1 << 6) + (hash1 >> 2));
+  }
+};
 
 class FunctionAnalyzer {
 public:
@@ -21,6 +33,7 @@ public:
     uint64_t start_address;
     uint64_t end_address;
     std::vector<BasicBlock> basic_blocks;
+    Fingerprint fingerprint;
     double similarity_score{0.0};
     std::vector<std::string> diff_details;
   };
