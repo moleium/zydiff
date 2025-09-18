@@ -1,10 +1,11 @@
 #pragma once
 
-#include "logger.h"
 #include <cstdint>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
+#include "logger.h"
 
 class binary_parser {
   public:
@@ -15,13 +16,15 @@ class binary_parser {
     std::vector<uint8_t> data;
   };
 
-  binary_parser(const std::string& path);
+  explicit binary_parser(const std::string& path);
 
   [[nodiscard]] const section* get_text_section() const;
   [[nodiscard]] uint64_t get_image_base() const;
 
   private:
-  void parse_pe();
+  void detect_and_parse();
+  void parse_pe(std::ifstream& file);
+  void parse_elf(std::ifstream& file);
 
   std::string path_;
   uint64_t image_base_;
