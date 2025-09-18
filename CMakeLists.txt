@@ -1,6 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
 project(zydiff)
 
-# for c++17, handle format library
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -15,10 +15,7 @@ add_executable(${PROJECT_NAME}
   src/core/parser.cpp
   src/core/analyzer.cpp
   src/core/differ.cpp
-
-  # I don't care about making separate cmake for this
-  example/main.cpp
-  )
+)
 
 target_include_directories(${PROJECT_NAME} PRIVATE 
   ${CMAKE_CURRENT_SOURCE_DIR}/vendor
