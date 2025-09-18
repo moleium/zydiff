@@ -9,22 +9,22 @@ if(MSVC)
 endif()
 
 add_subdirectory(vendor/zydis)
+add_subdirectory(example)
 
-add_executable(${PROJECT_NAME}
+add_library(${PROJECT_NAME} STATIC
   src/core/decoder.cpp
   src/core/parser.cpp
   src/core/analyzer.cpp
   src/core/differ.cpp
 )
 
-target_include_directories(${PROJECT_NAME} PRIVATE 
-  ${CMAKE_CURRENT_SOURCE_DIR}/vendor
+target_include_directories(${PROJECT_NAME} PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/src/util
 )
 
-target_link_libraries(${PROJECT_NAME} PRIVATE
-  Zydis
+target_link_libraries(${PROJECT_NAME} PUBLIC
+  Zydis::Zydis
 )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
