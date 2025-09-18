@@ -19,7 +19,7 @@ BreakConstructorInitializersBeforeComma: false
 ColumnLimit: 120
 AlignArrayOfStructures: Left
 ConstructorInitializerAllOnOneLineOrOnePerLine: false
-ContinuationIndentWidth: 8
+ContinuationIndentWidth: 2
 AllowShortEnumsOnASingleLine: false
 IncludeCategories:
   - Regex: '^<.*'

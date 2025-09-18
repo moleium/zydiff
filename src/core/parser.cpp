@@ -1,13 +1,14 @@
 #include "parser.h"
+#include <algorithm>
 #include <fstream>
 #include <stdexcept>
 #include <windows.h>
 
-BinaryParser::BinaryParser(const std::string& path) : path_(path), image_base_(0) {
-  ParsePE();
+binary_parser::binary_parser(const std::string& path) : path_(path), image_base_(0) {
+  parse_pe();
 }
 
-void BinaryParser::ParsePE() {
+void binary_parser::parse_pe() {
   std::ifstream file(path_, std::ios::binary);
   if (!file) {
     throw std::runtime_error("Failed to open file: " + path_);
@@ -35,38 +36,37 @@ void BinaryParser::ParsePE() {
   for (int i = 0; i < nt_headers.FileHeader.NumberOfSections; i++) {
     file.read(reinterpret_cast<char*>(&section_header), sizeof(section_header));
 
-    Section section;
-    section.name = std::string(reinterpret_cast<char*>(section_header.Name), 8);
-    section.virtual_address = section_header.VirtualAddress;
-    section.size = section_header.SizeOfRawData;
+    section sect;
+    sect.name = std::string(reinterpret_cast<char*>(section_header.Name), 8);
+    sect.virtual_address = section_header.VirtualAddress;
+    sect.size = section_header.SizeOfRawData;
 
-    LOG("Found section: %s, VA: 0x%x, Size: 0x%x\n", section.name.c_str(), section.virtual_address, section.size);
+    LOG("Found section: %s, VA: 0x%x, Size: 0x%x\n", sect.name.c_str(), sect.virtual_address, sect.size);
 
     auto current_pos = file.tellg();
     file.seekg(section_header.PointerToRawData);
-    section.data.resize(section_header.SizeOfRawData);
-    file.read(reinterpret_cast<char*>(section.data.data()), section_header.SizeOfRawData);
+    sect.data.resize(section_header.SizeOfRawData);
+    file.read(reinterpret_cast<char*>(sect.data.data()), section_header.SizeOfRawData);
     file.seekg(current_pos);
 
-    sections_.push_back(std::move(section));
+    sections_.push_back(std::move(sect));
   }
 }
 
-auto BinaryParser::GetTextSection() const -> const Section* {
-  for (const auto& section : sections_) {
-    if (section.name.starts_with(".text")) {
-      LOG("Found .text section with %zu bytes of data\n", section.data.size());
-      for (size_t i = 0; i < (std::min)(size_t(16), section.data.size()); i++) {
-        LOG("%02x ", section.data[i]);
+const binary_parser::section* binary_parser::get_text_section() const {
+  for (const auto& sect : sections_) {
+    if (sect.name.starts_with(".text")) {
+      LOG("Found .text section with %zu bytes of data\n", sect.data.size());
+      for (size_t i = 0; i < (std::min)(size_t(16), sect.data.size()); i++) {
+        LOG("%02x ", sect.data[i]);
       }
       LOG("\n");
-      return &section;
+      return &sect;
     }
   }
   return nullptr;
 }
 
-auto BinaryParser::GetImageBase() const -> uint64_t {
+uint64_t binary_parser::get_image_base() const {
   return image_base_;
 }
-

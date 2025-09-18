@@ -1,30 +1,29 @@
 #pragma once
 
+#include "logger.h"
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "logger.h"
-
-class BinaryParser {
+class binary_parser {
   public:
-  struct Section {
+  struct section {
     std::string name;
     uint64_t virtual_address;
     uint64_t size;
     std::vector<uint8_t> data;
   };
 
-  BinaryParser(const std::string& path);
+  binary_parser(const std::string& path);
 
-  [[nodiscard]] auto GetTextSection() const -> const Section*;
-  [[nodiscard]] auto GetImageBase() const -> uint64_t;
+  [[nodiscard]] const section* get_text_section() const;
+  [[nodiscard]] uint64_t get_image_base() const;
 
   private:
-  void ParsePE();
+  void parse_pe();
 
   std::string path_;
   uint64_t image_base_;
-  std::vector<Section> sections_;
+  std::vector<section> sections_;
 };

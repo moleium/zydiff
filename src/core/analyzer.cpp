@@ -20,7 +20,7 @@ std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutine
       continue;
     }
 
-    auto instr = decoder_.get_dcoded_instruction();
+    auto instr = decoder_.get_decoded_instruction();
     auto operands = decoder_.get_decoded_operands();
 
     // push rbp
@@ -31,7 +31,7 @@ std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutine
       size_t next_offset = offset + instr.length;
       if (next_offset < size_ - 3 &&
           decoder_.disassemble(base_address_ + next_offset, data_ + next_offset, size_ - next_offset)) {
-        auto next_instr = decoder_.get_dcoded_instruction();
+        auto next_instr = decoder_.get_decoded_instruction();
         auto next_ops = decoder_.get_decoded_operands();
 
         if (next_instr.mnemonic == ZYDIS_MNEMONIC_MOV && next_ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
@@ -60,7 +60,7 @@ std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutine
           break;
         }
 
-        auto curr_instr = decoder_.get_dcoded_instruction();
+        auto curr_instr = decoder_.get_decoded_instruction();
         if (curr_instr.mnemonic != ZYDIS_MNEMONIC_PUSH) {
           break;
         }
@@ -132,7 +132,7 @@ auto subroutine_analyzer::find_basic_blocks(uint64_t start_address) -> std::vect
       }
 
       auto instruction = decoder_.get_instruction();
-      auto decoded_instruction = decoder_.get_dcoded_instruction();
+      auto decoded_instruction = decoder_.get_decoded_instruction();
       auto decoded_operands = decoder_.get_decoded_operands();
 
       block.instructions.push_back(instruction);

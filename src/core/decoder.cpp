@@ -1,11 +1,11 @@
 #include "decoder.h"
 
-Zydis::Zydis() {
+zydis::zydis() {
   ZydisDecoderInit(&decoder_, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
   ZydisFormatterInit(&formatter_, ZYDIS_FORMATTER_STYLE_INTEL);
 }
 
-auto Zydis::Disassemble(uint64_t address, const unsigned char* data, size_t size) -> bool {
+auto zydis::disassemble(uint64_t address, const unsigned char* data, size_t size) -> bool {
   if (data == nullptr || size == 0)
     return false;
 
@@ -52,14 +52,14 @@ auto Zydis::Disassemble(uint64_t address, const unsigned char* data, size_t size
   return true;
 }
 
-[[nodiscard]] auto Zydis::GetInstruction() const -> std::string {
+[[nodiscard]] auto zydis::get_instruction() const -> std::string {
   if (success_) {
     return std::string(instruction_text_);
   }
   return std::string("???");
 }
 
-[[nodiscard]] auto Zydis::GetInstructionBytes(const unsigned char* data) const -> std::string {
+[[nodiscard]] auto zydis::get_instruction_bytes(const unsigned char* data) const -> std::string {
   if (success_) {
     std::string bytes;
     for (int j = 0; j < instruction_.info.length; j++) {
@@ -70,18 +70,18 @@ auto Zydis::Disassemble(uint64_t address, const unsigned char* data, size_t size
   return std::string("???");
 }
 
-[[nodiscard]] auto Zydis::GetInstructionAddress() const -> uint64_t {
+[[nodiscard]] auto zydis::get_instruction_address() const -> uint64_t {
   return address_;
 }
 
-[[nodiscard]] auto Zydis::GetVisibleOperandCount() const -> int {
+[[nodiscard]] auto zydis::get_visible_operand_count() const -> int {
   return visible_operand_count_;
 }
 
-[[nodiscard]] auto Zydis::GetDecodedInstruction() const -> ZydisDecodedInstruction {
+[[nodiscard]] auto zydis::get_decoded_instruction() const -> ZydisDecodedInstruction {
   return instruction_.info;
 }
 
-[[nodiscard]] auto Zydis::GetDecodedOperands() const -> const ZydisDecodedOperand* {
+[[nodiscard]] auto zydis::get_decoded_operands() const -> const ZydisDecodedOperand* {
   return instruction_.operands;
 }

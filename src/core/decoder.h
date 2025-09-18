@@ -18,7 +18,7 @@ class zydis {
   [[nodiscard]] auto get_instruction_bytes(const unsigned char* data) const -> std::string;
   [[nodiscard]] auto get_instruction_address() const -> uint64_t;
   [[nodiscard]] auto get_visible_operand_count() const -> int;
-  [[nodiscard]] auto get_dcoded_instruction() const -> ZydisDecodedInstruction;
+  [[nodiscard]] auto get_decoded_instruction() const -> ZydisDecodedInstruction;
   [[nodiscard]] auto get_decoded_operands() const -> const ZydisDecodedOperand*;
 
   private:
