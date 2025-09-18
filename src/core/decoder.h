@@ -8,23 +8,18 @@
 #include <format>
 #include <string>
 
-class Zydis {
+class zydis {
   public:
-  Zydis();
+  zydis();
 
-  auto Disassemble(uint64_t address, const unsigned char* data, size_t size) -> bool;
+  auto disassemble(uint64_t address, const unsigned char* data, size_t size) -> bool;
 
-  [[nodiscard]] auto GetInstruction() const -> std::string;
-
-  [[nodiscard]] auto GetInstructionBytes(const unsigned char* data) const -> std::string;
-
-  [[nodiscard]] auto GetInstructionAddress() const -> uint64_t;
-
-  [[nodiscard]] auto GetVisibleOperandCount() const -> int;
-
-  [[nodiscard]] auto GetDecodedInstruction() const -> ZydisDecodedInstruction;
-
-  [[nodiscard]] auto GetDecodedOperands() const -> const ZydisDecodedOperand*;
+  [[nodiscard]] auto get_instruction() const -> std::string;
+  [[nodiscard]] auto get_instruction_bytes(const unsigned char* data) const -> std::string;
+  [[nodiscard]] auto get_instruction_address() const -> uint64_t;
+  [[nodiscard]] auto get_visible_operand_count() const -> int;
+  [[nodiscard]] auto get_dcoded_instruction() const -> ZydisDecodedInstruction;
+  [[nodiscard]] auto get_decoded_operands() const -> const ZydisDecodedOperand*;
 
   private:
   ZydisDecoder decoder_;

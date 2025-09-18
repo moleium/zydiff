@@ -1,12 +1,13 @@
 #include "analyzer.h"
+#include <algorithm>
 #include <stack>
 
-FunctionAnalyzer::FunctionAnalyzer(const uint8_t* data, size_t size, uint64_t base_address) :
+subroutine_analyzer::subroutine_analyzer(const uint8_t* data, size_t size, uint64_t base_address) :
     data_(data), size_(size), base_address_(base_address) {
 }
 
-auto FunctionAnalyzer::IdentifyFunctions() -> std::vector<Function> {
-  std::vector<Function> functions;
+std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutines() {
+  std::vector<subroutine> functions;
   LOG("Scanning for functions in %zu bytes of data\n", size_);
 
   for (size_t offset = 0; offset < size_ - 15; offset++) {
@@ -15,12 +16,12 @@ auto FunctionAnalyzer::IdentifyFunctions() -> std::vector<Function> {
       continue;
     }
 
-    if (!decoder_.Disassemble(base_address_ + offset, data_ + offset, size_ - offset)) {
+    if (!decoder_.disassemble(base_address_ + offset, data_ + offset, size_ - offset)) {
       continue;
     }
 
-    auto instr = decoder_.GetDecodedInstruction();
-    auto operands = decoder_.GetDecodedOperands();
+    auto instr = decoder_.get_dcoded_instruction();
+    auto operands = decoder_.get_decoded_operands();
 
     // push rbp
     if (instr.mnemonic == ZYDIS_MNEMONIC_PUSH && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
@@ -29,9 +30,9 @@ auto FunctionAnalyzer::IdentifyFunctions() -> std::vector<Function> {
       // mov rbp, rsp
       size_t next_offset = offset + instr.length;
       if (next_offset < size_ - 3 &&
-          decoder_.Disassemble(base_address_ + next_offset, data_ + next_offset, size_ - next_offset)) {
-        auto next_instr = decoder_.GetDecodedInstruction();
-        auto next_ops = decoder_.GetDecodedOperands();
+          decoder_.disassemble(base_address_ + next_offset, data_ + next_offset, size_ - next_offset)) {
+        auto next_instr = decoder_.get_dcoded_instruction();
+        auto next_ops = decoder_.get_decoded_operands();
 
         if (next_instr.mnemonic == ZYDIS_MNEMONIC_MOV && next_ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
             next_ops[0].reg.value == ZYDIS_REGISTER_RBP && next_ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER &&
@@ -51,17 +52,15 @@ auto FunctionAnalyzer::IdentifyFunctions() -> std::vector<Function> {
 
     // push registers sequence
     if (instr.mnemonic == ZYDIS_MNEMONIC_PUSH) {
-      bool is_prolog = true;
       size_t push_count = 0;
       size_t curr_offset = offset;
 
       while (curr_offset < size_ - 3 && push_count < 4) {
-        if (!decoder_.Disassemble(base_address_ + curr_offset, data_ + curr_offset, size_ - curr_offset)) {
-          is_prolog = false;
+        if (!decoder_.disassemble(base_address_ + curr_offset, data_ + curr_offset, size_ - curr_offset)) {
           break;
         }
 
-        auto curr_instr = decoder_.GetDecodedInstruction();
+        auto curr_instr = decoder_.get_dcoded_instruction();
         if (curr_instr.mnemonic != ZYDIS_MNEMONIC_PUSH) {
           break;
         }
@@ -80,18 +79,17 @@ auto FunctionAnalyzer::IdentifyFunctions() -> std::vector<Function> {
   LOG("Found %zu function starts\n", function_starts_.size());
 
   for (auto start_address : function_starts_) {
-    functions.push_back(AnalyzeFunction(start_address));
+    functions.push_back(analyze_subroutines(start_address));
   }
 
   return functions;
 }
 
-auto FunctionAnalyzer::AnalyzeFunction(uint64_t start_address) -> Function {
-  Function function;
+auto subroutine_analyzer::analyze_subroutines(uint64_t start_address) -> subroutine_analyzer::subroutine {
+  subroutine function;
   function.start_address = start_address;
-  function.basic_blocks = FindBasicBlocks(start_address);
+  function.basic_blocks = find_basic_blocks(start_address);
 
-  // Calculate fingerprint
   size_t total_instructions = 0;
   for (const auto& block : function.basic_blocks) {
     total_instructions += block.instructions.size();
@@ -107,8 +105,8 @@ auto FunctionAnalyzer::AnalyzeFunction(uint64_t start_address) -> Function {
   return function;
 }
 
-auto FunctionAnalyzer::FindBasicBlocks(uint64_t start_address) -> std::vector<BasicBlock> {
-  std::vector<BasicBlock> blocks;
+auto subroutine_analyzer::find_basic_blocks(uint64_t start_address) -> std::vector<subroutine_analyzer::basic_block> {
+  std::vector<basic_block> blocks;
   std::set<uint64_t> block_starts{start_address};
   std::set<uint64_t> processed_addresses;
 
@@ -123,28 +121,28 @@ auto FunctionAnalyzer::FindBasicBlocks(uint64_t start_address) -> std::vector<Ba
       continue;
     }
 
-    BasicBlock block;
+    basic_block block;
     block.start_address = current_address;
 
     auto offset = current_address - base_address_;
 
     while (offset < size_) {
-      if (!decoder_.Disassemble(current_address, data_ + offset, size_ - offset)) {
+      if (!decoder_.disassemble(current_address, data_ + offset, size_ - offset)) {
         break;
       }
 
-      auto instruction = decoder_.GetInstruction();
-      auto decoded_instruction = decoder_.GetDecodedInstruction();
-      auto decoded_operands = decoder_.GetDecodedOperands();
+      auto instruction = decoder_.get_instruction();
+      auto decoded_instruction = decoder_.get_dcoded_instruction();
+      auto decoded_operands = decoder_.get_decoded_operands();
 
       block.instructions.push_back(instruction);
 
-      if (IsControlFlowInstruction(decoded_instruction)) {
+      if (is_control_flow(decoded_instruction)) {
         if (decoded_instruction.mnemonic == ZYDIS_MNEMONIC_RET) {
           break;
         }
 
-        if (auto target = GetJumpTarget(decoded_instruction, decoded_operands, current_address)) {
+        if (auto target = get_jump_target(decoded_instruction, decoded_operands, current_address)) {
           block_starts.insert(*target);
           block.successors.push_back(*target);
           address_stack.push(*target);
@@ -172,19 +170,19 @@ auto FunctionAnalyzer::FindBasicBlocks(uint64_t start_address) -> std::vector<Ba
   return blocks;
 }
 
-auto FunctionAnalyzer::IsJumpInstruction(const ZydisDecodedInstruction& instruction) const -> bool {
+auto subroutine_analyzer::is_jmp(const ZydisDecodedInstruction& instruction) const -> bool {
   return ZYDIS_MNEMONIC_JB <= instruction.mnemonic && instruction.mnemonic <= ZYDIS_MNEMONIC_JZ;
 }
 
-auto FunctionAnalyzer::IsCallInstruction(const ZydisDecodedInstruction& instruction) const -> bool {
+auto subroutine_analyzer::is_call(const ZydisDecodedInstruction& instruction) const -> bool {
   return instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
 }
 
-auto FunctionAnalyzer::IsReturnInstruction(const ZydisDecodedInstruction& instruction) const -> bool {
+auto subroutine_analyzer::is_return(const ZydisDecodedInstruction& instruction) const -> bool {
   return instruction.mnemonic == ZYDIS_MNEMONIC_RET;
 }
 
-auto FunctionAnalyzer::IsControlFlowInstruction(const ZydisDecodedInstruction& instruction) const -> bool {
+auto subroutine_analyzer::is_control_flow(const ZydisDecodedInstruction& instruction) -> bool {
   switch (instruction.mnemonic) {
     case ZYDIS_MNEMONIC_JMP:
     case ZYDIS_MNEMONIC_JB:
@@ -216,7 +214,7 @@ auto FunctionAnalyzer::IsControlFlowInstruction(const ZydisDecodedInstruction& i
   }
 }
 
-auto FunctionAnalyzer::GetJumpTarget(
+auto subroutine_analyzer::get_jump_target(
         const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands, uint64_t current_address
 ) const -> std::optional<uint64_t> {
 
@@ -234,12 +232,14 @@ auto FunctionAnalyzer::GetJumpTarget(
 }
 
 /*
- * string metric for measuring the difference between two sequences.
- * defined as the minimum number of single-character edits (insertions, deletions, or substitutions)
+ * measure the difference between two sequences by 
+ * calculating the minimum number of single character edits
+ * (insertions, deletions, or substitutions)
  * required to change one word into the other.
  */
-auto FunctionAnalyzer::LevenshteinDistance(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2)
-        -> size_t {
+auto subroutine_analyzer::levenshtein_distance(
+        const std::vector<std::string>& seq1, const std::vector<std::string>& seq2
+) -> std::size_t {
   const size_t m = seq1.size();
   const size_t n = seq2.size();
 
@@ -255,14 +255,15 @@ auto FunctionAnalyzer::LevenshteinDistance(const std::vector<std::string>& seq1,
       if (seq1[i - 1] == seq2[j - 1])
         dp[i][j] = dp[i - 1][j - 1];
       else
-        dp[i][j] = 1 + std::min(
-                               {dp[i - 1][j], // deletion
-                                dp[i][j - 1], // insertion
-                                dp[i - 1][j - 1]}
-                       ); // substitution
+        // clang-format off
+        dp[i][j] = 1 + std::min({
+          dp[i - 1][j],    // deletion
+          dp[i][j - 1],    // insertion
+          dp[i - 1][j - 1] // substitution
+        });
+        // clang-format on
     }
   }
 
   return dp[m][n];
 }
-
