@@ -1,0 +1,45 @@
+CompileFlags:
+  Add: [-std=c++23, -Wall, -Wextra, -Wpedantic]
+  Compiler: clang++
+
+Diagnostics:
+  ClangTidy:
+    Add: [readability-identifier-naming]
+    CheckOptions:
+      readability-identifier-naming.ClassCase: snake_case
+      readability-identifier-naming.StructCase: snake_case
+      readability-identifier-naming.EnumCase: snake_case
+      readability-identifier-naming.UnionCase: snake_case
+
+      readability-identifier-naming.ConceptCase: snake_case
+
+      readability-identifier-naming.FunctionCase: snake_case
+      readability-identifier-naming.MethodCase: snake_case
+
+      readability-identifier-naming.VariableCase: snake_case
+      readability-identifier-naming.MemberCase: snake_case
+      readability-identifier-naming.ParameterCase: snake_case
+
+      readability-identifier-naming.ConstantCase: snake_case
+      
+      readability-identifier-naming.EnumConstantCase: snake_case
+      readability-identifier-naming.ScopedEnumConstantCase: snake_case
+
+      readability-identifier-naming.ClassConstantCase: snake_case
+      readability-identifier-naming.GlobalConstantCase: snake_case
+      
+      readability-identifier-naming.LocalConstantCase: snake_case
+      readability-identifier-naming.StaticConstantCase: snake_case
+      readability-identifier-naming.ConstexprVariableCase: snake_case
+
+      readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
+
+      readability-identifier-naming.NamespaceCase: snake_case
+      readability-identifier-naming.InlineNamespaceCase: snake_case
+
+      readability-identifier-naming.TemplateParameterCase: snake_case
+      readability-identifier-naming.TypeTemplateParameterCase: snake_case
+      readability-identifier-naming.ValueTemplateParameterCase: snake_case
+
+      readability-identifier-naming.TypedefCase: snake_case
+      readability-identifier-naming.TypeAliasCase: snake_case
