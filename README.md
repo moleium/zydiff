@@ -1,6 +1,12 @@
 # zydiff
 
-This is a small binary diffing tool that uses Zydis for disassembly.
-It's not particularly fast or smart, but it might be useful.
+A lightweight binary diffing library for x86-64 executables.
 
-Right now it only handles PE files and .text section diffing.
+zydiff compares two binaries and generates a diff of the changes. using the Zydis disassembler engine.
+Supports both PE (Windows) and ELF (Linux) binaries. can be both used as a library, or as a standalone executable (`example` project)
+
+## Usage
+
+```sh
+zydiff <primary_binary> <secondary_binary>
+```
