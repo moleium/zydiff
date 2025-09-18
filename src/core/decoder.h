@@ -5,20 +5,18 @@
 #include <Zycore/Format.h>
 #include <Zydis/Zydis.h>
 
-#include <string>
 #include <format>
+#include <string>
 
 class Zydis {
-public:
+  public:
   Zydis();
 
-  auto Disassemble(uint64_t address, const unsigned char *data, size_t size)
-      -> bool;
+  auto Disassemble(uint64_t address, const unsigned char* data, size_t size) -> bool;
 
   [[nodiscard]] auto GetInstruction() const -> std::string;
 
-  [[nodiscard]] auto GetInstructionBytes(const unsigned char *data) const
-      -> std::string;
+  [[nodiscard]] auto GetInstructionBytes(const unsigned char* data) const -> std::string;
 
   [[nodiscard]] auto GetInstructionAddress() const -> uint64_t;
 
@@ -26,9 +24,9 @@ public:
 
   [[nodiscard]] auto GetDecodedInstruction() const -> ZydisDecodedInstruction;
 
-  [[nodiscard]] auto GetDecodedOperands() const -> const ZydisDecodedOperand *;
+  [[nodiscard]] auto GetDecodedOperands() const -> const ZydisDecodedOperand*;
 
-private:
+  private:
   ZydisDecoder decoder_;
   ZydisFormatter formatter_;
   uint64_t address_;
@@ -40,3 +38,4 @@ private:
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
   } instruction_;
 };
+

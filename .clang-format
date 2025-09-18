@@ -30,7 +30,7 @@ IncludeCategories:
     Priority: 3
 IncludeIsMainRegex: '([-_](test|unittest))?$'
 IndentCaseLabels: true
-IndentWidth: 4
+IndentWidth: 2
 PointerAlignment: Left
 InsertNewlineAtEOF: true
 MacroBlockBegin: ''

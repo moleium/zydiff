@@ -1,10 +1,9 @@
 #include "parser.h"
-#include <windows.h>
 #include <fstream>
 #include <stdexcept>
+#include <windows.h>
 
-BinaryParser::BinaryParser(const std::string& path) 
-    : path_(path), image_base_(0) {
+BinaryParser::BinaryParser(const std::string& path) : path_(path), image_base_(0) {
   ParsePE();
 }
 
@@ -35,14 +34,13 @@ void BinaryParser::ParsePE() {
   IMAGE_SECTION_HEADER section_header;
   for (int i = 0; i < nt_headers.FileHeader.NumberOfSections; i++) {
     file.read(reinterpret_cast<char*>(&section_header), sizeof(section_header));
-    
+
     Section section;
     section.name = std::string(reinterpret_cast<char*>(section_header.Name), 8);
     section.virtual_address = section_header.VirtualAddress;
     section.size = section_header.SizeOfRawData;
-    
-    LOG("Found section: %s, VA: 0x%x, Size: 0x%x\n", 
-           section.name.c_str(), section.virtual_address, section.size);
+
+    LOG("Found section: %s, VA: 0x%x, Size: 0x%x\n", section.name.c_str(), section.virtual_address, section.size);
 
     auto current_pos = file.tellg();
     file.seekg(section_header.PointerToRawData);
@@ -70,4 +68,5 @@ auto BinaryParser::GetTextSection() const -> const Section* {
 
 auto BinaryParser::GetImageBase() const -> uint64_t {
   return image_base_;
-} 
+}
+

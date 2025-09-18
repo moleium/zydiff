@@ -93,10 +93,10 @@ struct SectionHeader {
 #pragma pack(pop)
 
 class PEFile {
-public:
+  public:
   PEFile() = default;
 
-  static std::optional<PEFile> parse(const std::vector<uint8_t> &data) {
+  static std::optional<PEFile> parse(const std::vector<uint8_t>& data) {
     if (data.size() < sizeof(DosHeader)) {
       return std::nullopt;
     }
@@ -104,7 +104,7 @@ public:
     PEFile pe;
     pe.raw_data_ = data;
 
-    auto *dos_header = reinterpret_cast<const DosHeader *>(data.data());
+    auto* dos_header = reinterpret_cast<const DosHeader*>(data.data());
     if (dos_header->e_magic != IMAGE_DOS_SIGNATURE) {
       return std::nullopt;
     }
@@ -115,8 +115,7 @@ public:
       return std::nullopt;
     }
 
-    auto *signature =
-        reinterpret_cast<const uint32_t *>(data.data() + pe_offset);
+    auto* signature = reinterpret_cast<const uint32_t*>(data.data() + pe_offset);
     if (*signature != IMAGE_NT_SIGNATURE) {
       return std::nullopt;
     }
@@ -125,37 +124,40 @@ public:
     if (pe_offset + sizeof(FileHeader) > data.size()) {
       return std::nullopt;
     }
-    pe.file_header_ =
-        *reinterpret_cast<const FileHeader *>(data.data() + pe_offset);
+    pe.file_header_ = *reinterpret_cast<const FileHeader*>(data.data() + pe_offset);
 
     pe_offset += sizeof(FileHeader);
     if (pe_offset + sizeof(OptionalHeader64) > data.size()) {
       return std::nullopt;
     }
-    pe.optional_header_ =
-        *reinterpret_cast<const OptionalHeader64 *>(data.data() + pe_offset);
+    pe.optional_header_ = *reinterpret_cast<const OptionalHeader64*>(data.data() + pe_offset);
 
     pe_offset += pe.file_header_.SizeOfOptionalHeader;
     for (uint16_t i = 0; i < pe.file_header_.NumberOfSections; i++) {
       if (pe_offset + sizeof(SectionHeader) > data.size()) {
         return std::nullopt;
       }
-      pe.section_headers_.push_back(
-          *reinterpret_cast<const SectionHeader *>(data.data() + pe_offset));
+      pe.section_headers_.push_back(*reinterpret_cast<const SectionHeader*>(data.data() + pe_offset));
       pe_offset += sizeof(SectionHeader);
     }
 
     return pe;
   }
 
-  const DosHeader &GetDosHeader() const { return dos_header_; }
-  const FileHeader &GetFileHeader() const { return file_header_; }
-  const OptionalHeader64 &GetOptionalHeader() const { return optional_header_; }
-  const std::vector<SectionHeader> &GetSectionHeaders() const {
+  const DosHeader& GetDosHeader() const {
+    return dos_header_;
+  }
+  const FileHeader& GetFileHeader() const {
+    return file_header_;
+  }
+  const OptionalHeader64& GetOptionalHeader() const {
+    return optional_header_;
+  }
+  const std::vector<SectionHeader>& GetSectionHeaders() const {
     return section_headers_;
   }
 
-private:
+  private:
   std::vector<uint8_t> raw_data_;
   DosHeader dos_header_{};
   FileHeader file_header_{};

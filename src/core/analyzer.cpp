@@ -1,9 +1,9 @@
 #include "analyzer.h"
 #include <stack>
 
-FunctionAnalyzer::FunctionAnalyzer(const uint8_t *data, size_t size,
-                                   uint64_t base_address)
-    : data_(data), size_(size), base_address_(base_address) {}
+FunctionAnalyzer::FunctionAnalyzer(const uint8_t* data, size_t size, uint64_t base_address) :
+    data_(data), size_(size), base_address_(base_address) {
+}
 
 auto FunctionAnalyzer::IdentifyFunctions() -> std::vector<Function> {
   std::vector<Function> functions;
@@ -23,22 +23,18 @@ auto FunctionAnalyzer::IdentifyFunctions() -> std::vector<Function> {
     auto operands = decoder_.GetDecodedOperands();
 
     // push rbp
-    if (instr.mnemonic == ZYDIS_MNEMONIC_PUSH && 
-        operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+    if (instr.mnemonic == ZYDIS_MNEMONIC_PUSH && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
         operands[0].reg.value == ZYDIS_REGISTER_RBP) {
-      
-      //mov rbp, rsp
+
+      // mov rbp, rsp
       size_t next_offset = offset + instr.length;
-      if (next_offset < size_ - 3 && 
-          decoder_.Disassemble(base_address_ + next_offset, 
-                             data_ + next_offset, size_ - next_offset)) {
+      if (next_offset < size_ - 3 &&
+          decoder_.Disassemble(base_address_ + next_offset, data_ + next_offset, size_ - next_offset)) {
         auto next_instr = decoder_.GetDecodedInstruction();
         auto next_ops = decoder_.GetDecodedOperands();
-        
-        if (next_instr.mnemonic == ZYDIS_MNEMONIC_MOV &&
-            next_ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-            next_ops[0].reg.value == ZYDIS_REGISTER_RBP &&
-            next_ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+
+        if (next_instr.mnemonic == ZYDIS_MNEMONIC_MOV && next_ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+            next_ops[0].reg.value == ZYDIS_REGISTER_RBP && next_ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER &&
             next_ops[1].reg.value == ZYDIS_REGISTER_RSP) {
           function_starts_.insert(base_address_ + offset);
           continue;
@@ -47,10 +43,8 @@ auto FunctionAnalyzer::IdentifyFunctions() -> std::vector<Function> {
     }
 
     // sub rsp, XX
-    if (instr.mnemonic == ZYDIS_MNEMONIC_SUB &&
-        operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-        operands[0].reg.value == ZYDIS_REGISTER_RSP &&
-        operands[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+    if (instr.mnemonic == ZYDIS_MNEMONIC_SUB && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+        operands[0].reg.value == ZYDIS_REGISTER_RSP && operands[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
       function_starts_.insert(base_address_ + offset);
       continue;
     }
@@ -60,11 +54,9 @@ auto FunctionAnalyzer::IdentifyFunctions() -> std::vector<Function> {
       bool is_prolog = true;
       size_t push_count = 0;
       size_t curr_offset = offset;
-      
+
       while (curr_offset < size_ - 3 && push_count < 4) {
-        if (!decoder_.Disassemble(base_address_ + curr_offset, 
-                                data_ + curr_offset, 
-                                size_ - curr_offset)) {
+        if (!decoder_.Disassemble(base_address_ + curr_offset, data_ + curr_offset, size_ - curr_offset)) {
           is_prolog = false;
           break;
         }
@@ -108,15 +100,14 @@ auto FunctionAnalyzer::AnalyzeFunction(uint64_t start_address) -> Function {
 
   // Find the highest address in any basic block for the function end
   function.end_address = start_address;
-  for (const auto &block : function.basic_blocks) {
+  for (const auto& block : function.basic_blocks) {
     function.end_address = std::max(function.end_address, block.end_address);
   }
 
   return function;
 }
 
-auto FunctionAnalyzer::FindBasicBlocks(uint64_t start_address)
-    -> std::vector<BasicBlock> {
+auto FunctionAnalyzer::FindBasicBlocks(uint64_t start_address) -> std::vector<BasicBlock> {
   std::vector<BasicBlock> blocks;
   std::set<uint64_t> block_starts{start_address};
   std::set<uint64_t> processed_addresses;
@@ -153,8 +144,7 @@ auto FunctionAnalyzer::FindBasicBlocks(uint64_t start_address)
           break;
         }
 
-        if (auto target = GetJumpTarget(decoded_instruction, decoded_operands,
-                                        current_address)) {
+        if (auto target = GetJumpTarget(decoded_instruction, decoded_operands, current_address)) {
           block_starts.insert(*target);
           block.successors.push_back(*target);
           address_stack.push(*target);
@@ -182,24 +172,19 @@ auto FunctionAnalyzer::FindBasicBlocks(uint64_t start_address)
   return blocks;
 }
 
-auto FunctionAnalyzer::IsJumpInstruction(
-    const ZydisDecodedInstruction &instruction) const -> bool {
-  return ZYDIS_MNEMONIC_JB <= instruction.mnemonic &&
-         instruction.mnemonic <= ZYDIS_MNEMONIC_JZ;
+auto FunctionAnalyzer::IsJumpInstruction(const ZydisDecodedInstruction& instruction) const -> bool {
+  return ZYDIS_MNEMONIC_JB <= instruction.mnemonic && instruction.mnemonic <= ZYDIS_MNEMONIC_JZ;
 }
 
-auto FunctionAnalyzer::IsCallInstruction(
-    const ZydisDecodedInstruction &instruction) const -> bool {
+auto FunctionAnalyzer::IsCallInstruction(const ZydisDecodedInstruction& instruction) const -> bool {
   return instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
 }
 
-auto FunctionAnalyzer::IsReturnInstruction(
-    const ZydisDecodedInstruction &instruction) const -> bool {
+auto FunctionAnalyzer::IsReturnInstruction(const ZydisDecodedInstruction& instruction) const -> bool {
   return instruction.mnemonic == ZYDIS_MNEMONIC_RET;
 }
 
-auto FunctionAnalyzer::IsControlFlowInstruction(
-    const ZydisDecodedInstruction& instruction) const -> bool {
+auto FunctionAnalyzer::IsControlFlowInstruction(const ZydisDecodedInstruction& instruction) const -> bool {
   switch (instruction.mnemonic) {
     case ZYDIS_MNEMONIC_JMP:
     case ZYDIS_MNEMONIC_JB:
@@ -232,10 +217,9 @@ auto FunctionAnalyzer::IsControlFlowInstruction(
 }
 
 auto FunctionAnalyzer::GetJumpTarget(
-    const ZydisDecodedInstruction& instruction,
-    const ZydisDecodedOperand* operands,
-    uint64_t current_address) const -> std::optional<uint64_t> {
-  
+        const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands, uint64_t current_address
+) const -> std::optional<uint64_t> {
+
   if (operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
     if (operands[0].imm.is_relative) {
       // relative jump, calculate absolute target
@@ -245,23 +229,21 @@ auto FunctionAnalyzer::GetJumpTarget(
       return operands[0].imm.value.u;
     }
   }
-  
+
   return std::nullopt;
 }
 
 /*
-* string metric for measuring the difference between two sequences.
-* defined as the minimum number of single-character edits (insertions, deletions, or substitutions)
-* required to change one word into the other.
-*/
-auto FunctionAnalyzer::LevenshteinDistance(
-    const std::vector<std::string>& seq1,
-    const std::vector<std::string>& seq2) -> size_t {
+ * string metric for measuring the difference between two sequences.
+ * defined as the minimum number of single-character edits (insertions, deletions, or substitutions)
+ * required to change one word into the other.
+ */
+auto FunctionAnalyzer::LevenshteinDistance(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2)
+        -> size_t {
   const size_t m = seq1.size();
   const size_t n = seq2.size();
-  
-  std::vector<std::vector<size_t>> dp(
-      m + 1, std::vector<size_t>(n + 1));
+
+  std::vector<std::vector<size_t>> dp(m + 1, std::vector<size_t>(n + 1));
 
   for (size_t i = 0; i <= m; i++)
     dp[i][0] = i;
@@ -270,14 +252,17 @@ auto FunctionAnalyzer::LevenshteinDistance(
 
   for (size_t i = 1; i <= m; i++) {
     for (size_t j = 1; j <= n; j++) {
-      if (seq1[i-1] == seq2[j-1])
-        dp[i][j] = dp[i-1][j-1];
+      if (seq1[i - 1] == seq2[j - 1])
+        dp[i][j] = dp[i - 1][j - 1];
       else
-        dp[i][j] = 1 + std::min({dp[i-1][j],     // deletion
-                                dp[i][j-1],             // insertion
-                                dp[i-1][j-1]});         // substitution
+        dp[i][j] = 1 + std::min(
+                               {dp[i - 1][j], // deletion
+                                dp[i][j - 1], // insertion
+                                dp[i - 1][j - 1]}
+                       ); // substitution
     }
   }
 
   return dp[m][n];
 }
+

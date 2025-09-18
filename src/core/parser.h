@@ -1,14 +1,14 @@
 #pragma once
 
-#include <string>
-#include <vector>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "logger.h"
 
 class BinaryParser {
-public:
+  public:
   struct Section {
     std::string name;
     uint64_t virtual_address;
@@ -17,14 +17,14 @@ public:
   };
 
   BinaryParser(const std::string& path);
-  
+
   [[nodiscard]] auto GetTextSection() const -> const Section*;
   [[nodiscard]] auto GetImageBase() const -> uint64_t;
 
-private:
+  private:
   void ParsePE();
-  
+
   std::string path_;
   uint64_t image_base_;
   std::vector<Section> sections_;
-}; 
+};
