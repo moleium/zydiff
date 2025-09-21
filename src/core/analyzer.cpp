@@ -107,7 +107,6 @@ auto subroutine_analyzer::analyze_subroutines(uint64_t start_address) -> subrout
 
 auto subroutine_analyzer::find_basic_blocks(uint64_t start_address) -> std::vector<subroutine_analyzer::basic_block> {
   std::vector<basic_block> blocks;
-  std::set<uint64_t> block_starts{start_address};
   std::set<uint64_t> processed_addresses;
 
   std::stack<uint64_t> address_stack;
@@ -138,23 +137,37 @@ auto subroutine_analyzer::find_basic_blocks(uint64_t start_address) -> std::vect
       block.instructions.push_back(instruction);
 
       if (is_control_flow(decoded_instruction)) {
-        if (decoded_instruction.mnemonic == ZYDIS_MNEMONIC_RET) {
+        if (is_return(decoded_instruction)) {
+          break;
+        }
+
+        // call instr is the end of bb. only successor is within this function
+        if (is_call(decoded_instruction)) {
+          auto next_address = current_address + decoded_instruction.length;
+          if (next_address < base_address_ + size_) {
+            block.successors.push_back(next_address);
+            address_stack.push(next_address);
+          }
           break;
         }
 
         if (auto target = get_jump_target(decoded_instruction, decoded_operands, current_address)) {
-          block_starts.insert(*target);
-          block.successors.push_back(*target);
-          address_stack.push(*target);
+          if (*target >= base_address_ && *target < base_address_ + size_) {
+            block.successors.push_back(*target);
+            address_stack.push(*target);
+          }
+        }
 
-          // fall through for conditional jumps
-          if (decoded_instruction.mnemonic != ZYDIS_MNEMONIC_JMP) {
-            auto next_address = current_address + decoded_instruction.length;
-            block_starts.insert(next_address);
+        // if its not an unconditional jmp
+        // it also has a fall through path to the next instruction
+        if (decoded_instruction.mnemonic != ZYDIS_MNEMONIC_JMP) {
+          auto next_address = current_address + decoded_instruction.length;
+          if (next_address < base_address_ + size_) {
             block.successors.push_back(next_address);
             address_stack.push(next_address);
           }
         }
+
         break;
       }
 
@@ -215,7 +228,7 @@ auto subroutine_analyzer::is_control_flow(const ZydisDecodedInstruction& instruc
 }
 
 auto subroutine_analyzer::get_jump_target(
-        const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands, uint64_t current_address
+  const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands, uint64_t current_address
 ) const -> std::optional<uint64_t> {
 
   if (operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
@@ -232,13 +245,13 @@ auto subroutine_analyzer::get_jump_target(
 }
 
 /*
- * measure the difference between two sequences by 
+ * measure the difference between two sequences by
  * calculating the minimum number of single character edits
  * (insertions, deletions, or substitutions)
  * required to change one word into the other.
  */
 auto subroutine_analyzer::levenshtein_distance(
-        const std::vector<std::string>& seq1, const std::vector<std::string>& seq2
+  const std::vector<std::string>& seq1, const std::vector<std::string>& seq2
 ) -> std::size_t {
   const size_t m = seq1.size();
   const size_t n = seq2.size();
@@ -261,7 +274,7 @@ auto subroutine_analyzer::levenshtein_distance(
           dp[i][j - 1],    // insertion
           dp[i - 1][j - 1] // substitution
         });
-        // clang-format on
+      // clang-format on
     }
   }
 
