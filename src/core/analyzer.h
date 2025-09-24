@@ -41,12 +41,13 @@ class subroutine_analyzer {
   subroutine_analyzer(const uint8_t* data, size_t size, uint64_t base_address);
 
   std::vector<subroutine> get_subroutines();
-  subroutine analyze_subroutines(uint64_t start_address);
 
   static std::size_t levenshtein_distance(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2);
 
   private:
   std::vector<basic_block> find_basic_blocks(uint64_t start_address);
+  subroutine analyze_subroutine(uint64_t start_address);
+
   bool is_jmp(const ZydisDecodedInstruction& instruction) const;
   bool is_call(const ZydisDecodedInstruction& instruction) const;
   bool is_return(const ZydisDecodedInstruction& instruction) const;
@@ -62,5 +63,4 @@ class subroutine_analyzer {
   size_t size_;
   uint64_t base_address_;
   zydis decoder_;
-  std::set<uint64_t> function_starts_;
 };

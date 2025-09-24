@@ -1,6 +1,7 @@
 #include "analyzer.h"
 #include <algorithm>
 #include <stack>
+#include <unordered_set>
 
 subroutine_analyzer::subroutine_analyzer(const uint8_t* data, size_t size, uint64_t base_address) :
     data_(data), size_(size), base_address_(base_address) {
@@ -8,84 +9,96 @@ subroutine_analyzer::subroutine_analyzer(const uint8_t* data, size_t size, uint6
 
 std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutines() {
   std::vector<subroutine> functions;
-  LOG("Scanning for functions in %zu bytes of data\n", size_);
+  std::unordered_set<uint64_t> function_starts;
+  std::vector<uint64_t> work_queue;
+
+  if (size_ > 0) {
+    work_queue.push_back(base_address_);
+    function_starts.insert(base_address_);
+  }
+
+  size_t work_idx = 0;
+  while (work_idx < work_queue.size()) {
+    uint64_t current_address = work_queue[work_idx++];
+    size_t offset = current_address - base_address_;
+
+    while (offset < size_) {
+      if (!decoder_.disassemble(current_address, data_ + offset, size_ - offset)) {
+        offset++;
+        current_address++;
+        continue;
+      }
+
+      auto decoded_instruction = decoder_.get_decoded_instruction();
+      if (is_call(decoded_instruction)) {
+        auto operands = decoder_.get_decoded_operands();
+        if (auto target_opt = get_jump_target(decoded_instruction, operands, current_address)) {
+          uint64_t target = *target_opt;
+          if (target >= base_address_ && target < (base_address_ + size_)) {
+            if (function_starts.find(target) == function_starts.end()) {
+              function_starts.insert(target);
+              work_queue.push_back(target);
+            }
+          }
+        }
+      }
+
+      if (is_return(decoded_instruction) || decoded_instruction.mnemonic == ZYDIS_MNEMONIC_JMP) {
+        break;
+      }
+
+      offset += decoded_instruction.length;
+      current_address += decoded_instruction.length;
+    }
+  }
 
   for (size_t offset = 0; offset < size_ - 15; offset++) {
-    // already marked as a function start
-    if (function_starts_.contains(base_address_ + offset)) {
+    uint64_t current_address = base_address_ + offset;
+    if (function_starts.contains(current_address)) {
       continue;
     }
 
-    if (!decoder_.disassemble(base_address_ + offset, data_ + offset, size_ - offset)) {
+    if (!decoder_.disassemble(current_address, data_ + offset, size_ - offset)) {
       continue;
     }
 
     auto instr = decoder_.get_decoded_instruction();
     auto operands = decoder_.get_decoded_operands();
 
-    // push rbp
+    bool found_prologue = false;
+    // push rbp; mov rbp, rsp
     if (instr.mnemonic == ZYDIS_MNEMONIC_PUSH && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
         operands[0].reg.value == ZYDIS_REGISTER_RBP) {
-
-      // mov rbp, rsp
       size_t next_offset = offset + instr.length;
       if (next_offset < size_ - 3 &&
           decoder_.disassemble(base_address_ + next_offset, data_ + next_offset, size_ - next_offset)) {
         auto next_instr = decoder_.get_decoded_instruction();
         auto next_ops = decoder_.get_decoded_operands();
-
         if (next_instr.mnemonic == ZYDIS_MNEMONIC_MOV && next_ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
             next_ops[0].reg.value == ZYDIS_REGISTER_RBP && next_ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER &&
             next_ops[1].reg.value == ZYDIS_REGISTER_RSP) {
-          function_starts_.insert(base_address_ + offset);
-          continue;
+          found_prologue = true;
         }
       }
+    } else if (instr.mnemonic == ZYDIS_MNEMONIC_SUB && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+               operands[0].reg.value == ZYDIS_REGISTER_RSP && operands[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
+      found_prologue = true;
     }
 
-    // sub rsp, XX
-    if (instr.mnemonic == ZYDIS_MNEMONIC_SUB && operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-        operands[0].reg.value == ZYDIS_REGISTER_RSP && operands[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
-      function_starts_.insert(base_address_ + offset);
-      continue;
-    }
-
-    // push registers sequence
-    if (instr.mnemonic == ZYDIS_MNEMONIC_PUSH) {
-      size_t push_count = 0;
-      size_t curr_offset = offset;
-
-      while (curr_offset < size_ - 3 && push_count < 4) {
-        if (!decoder_.disassemble(base_address_ + curr_offset, data_ + curr_offset, size_ - curr_offset)) {
-          break;
-        }
-
-        auto curr_instr = decoder_.get_decoded_instruction();
-        if (curr_instr.mnemonic != ZYDIS_MNEMONIC_PUSH) {
-          break;
-        }
-
-        push_count++;
-        curr_offset += curr_instr.length;
-      }
-
-      if (push_count >= 2) {
-        function_starts_.insert(base_address_ + offset);
-        continue;
-      }
+    if (found_prologue) {
+      function_starts.insert(current_address);
+      offset += instr.length;
     }
   }
 
-  LOG("Found %zu function starts\n", function_starts_.size());
-
-  for (auto start_address : function_starts_) {
-    functions.push_back(analyze_subroutines(start_address));
+  for (auto start_address : function_starts) {
+    functions.push_back(analyze_subroutine(start_address));
   }
 
   return functions;
 }
 
-auto subroutine_analyzer::analyze_subroutines(uint64_t start_address) -> subroutine_analyzer::subroutine {
+subroutine_analyzer::subroutine subroutine_analyzer::analyze_subroutine(uint64_t start_address) {
   subroutine function;
   function.start_address = start_address;
   function.basic_blocks = find_basic_blocks(start_address);
@@ -105,9 +118,9 @@ auto subroutine_analyzer::analyze_subroutines(uint64_t start_address) -> subrout
   return function;
 }
 
-auto subroutine_analyzer::find_basic_blocks(uint64_t start_address) -> std::vector<subroutine_analyzer::basic_block> {
+std::vector<subroutine_analyzer::basic_block> subroutine_analyzer::find_basic_blocks(uint64_t start_address) {
   std::vector<basic_block> blocks;
-  std::set<uint64_t> processed_addresses;
+  std::unordered_set<uint64_t> processed_addresses;
 
   std::stack<uint64_t> address_stack;
   address_stack.push(start_address);
@@ -183,19 +196,19 @@ auto subroutine_analyzer::find_basic_blocks(uint64_t start_address) -> std::vect
   return blocks;
 }
 
-auto subroutine_analyzer::is_jmp(const ZydisDecodedInstruction& instruction) const -> bool {
+bool subroutine_analyzer::is_jmp(const ZydisDecodedInstruction& instruction) const {
   return ZYDIS_MNEMONIC_JB <= instruction.mnemonic && instruction.mnemonic <= ZYDIS_MNEMONIC_JZ;
 }
 
-auto subroutine_analyzer::is_call(const ZydisDecodedInstruction& instruction) const -> bool {
+bool subroutine_analyzer::is_call(const ZydisDecodedInstruction& instruction) const {
   return instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
 }
 
-auto subroutine_analyzer::is_return(const ZydisDecodedInstruction& instruction) const -> bool {
+bool subroutine_analyzer::is_return(const ZydisDecodedInstruction& instruction) const {
   return instruction.mnemonic == ZYDIS_MNEMONIC_RET;
 }
 
-auto subroutine_analyzer::is_control_flow(const ZydisDecodedInstruction& instruction) -> bool {
+bool subroutine_analyzer::is_control_flow(const ZydisDecodedInstruction& instruction) {
   switch (instruction.mnemonic) {
     case ZYDIS_MNEMONIC_JMP:
     case ZYDIS_MNEMONIC_JB:
@@ -227,9 +240,9 @@ auto subroutine_analyzer::is_control_flow(const ZydisDecodedInstruction& instruc
   }
 }
 
-auto subroutine_analyzer::get_jump_target(
+std::optional<uint64_t> subroutine_analyzer::get_jump_target(
   const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands, uint64_t current_address
-) const -> std::optional<uint64_t> {
+) const {
 
   if (operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
     if (operands[0].imm.is_relative) {
@@ -250,9 +263,9 @@ auto subroutine_analyzer::get_jump_target(
  * (insertions, deletions, or substitutions)
  * required to change one word into the other.
  */
-auto subroutine_analyzer::levenshtein_distance(
+std::size_t subroutine_analyzer::levenshtein_distance(
   const std::vector<std::string>& seq1, const std::vector<std::string>& seq2
-) -> std::size_t {
+) {
   const size_t m = seq1.size();
   const size_t n = seq2.size();
 
