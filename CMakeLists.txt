@@ -8,7 +8,10 @@ if(MSVC)
   add_compile_options(/MP)
 endif()
 
-add_subdirectory(vendor/zydis)
+if(NOT TARGET Zydis::Zydis)
+    add_subdirectory(vendor/zydis)
+endif()
+
 add_subdirectory(example)
 
 add_library(${PROJECT_NAME} STATIC
