@@ -7,9 +7,9 @@
 #include <format>
 #include <string>
 
-class zydis {
+class decoder {
   public:
-  zydis();
+  decoder();
 
   auto disassemble(uint64_t address, const unsigned char* data, size_t size) -> bool;
 

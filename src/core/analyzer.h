@@ -62,5 +62,5 @@ class subroutine_analyzer {
   const uint8_t* data_;
   size_t size_;
   uint64_t base_address_;
-  zydis decoder_;
+  decoder decoder_;
 };
