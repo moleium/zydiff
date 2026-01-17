@@ -18,11 +18,9 @@ binary_differ::diff_result binary_differ::compare() {
   auto secondary_text = secondary_->get_text_section();
 
   if (!primary_text || !secondary_text) {
-    LOG("Failed to get text sections\n");
+    std::println(stderr, "error: failed to get text sections");
     return result;
   }
-
-  LOG("Text section sizes - Primary: %zu, Secondary: %zu\n", primary_text->size, secondary_text->size);
 
   subroutine_analyzer primary_analyzer(
     primary_text->data.data(), primary_text->size, primary_->get_image_base() + primary_text->virtual_address
@@ -34,10 +32,6 @@ binary_differ::diff_result binary_differ::compare() {
 
   auto primary_subroutines = primary_analyzer.get_subroutines();
   auto secondary_subroutines = secondary_analyzer.get_subroutines();
-
-  LOG(
-    "Subroutines identified - Primary: %zu, Secondary: %zu\n", primary_subroutines.size(), secondary_subroutines.size()
-  );
 
   result.matched_subroutines = match_subroutines(primary_subroutines, secondary_subroutines);
 
@@ -75,25 +69,27 @@ double binary_differ::get_subroutine_similarity(
 
     auto distance = subroutine_analyzer::levenshtein_distance(bb1.instructions, bb2.instructions);
 
-    double block_similarity =
-      1.0 - static_cast<double>(distance) / std::max(bb1.instructions.size(), bb2.instructions.size());
-
-    if (block_similarity > 0.3) {
-      LOG("Block %zu similarity: %f\n", i, block_similarity);
+    if (bb1.instructions.empty() && bb2.instructions.empty()) {
+      continue;
     }
 
+    double block_similarity =
+      1.0 - static_cast<double>(distance) / std::max({size_t{1}, bb1.instructions.size(), bb2.instructions.size()});
+
+    // if blocks at the same index are very different
+    // try to find a better match elsewhere
     if (block_similarity < 0.3) {
-      double best_similarity = 0.0;
+      double best_similarity = block_similarity;
       for (const auto& other_bb : s2.basic_blocks) {
         auto curr_distance = subroutine_analyzer::levenshtein_distance(bb1.instructions, other_bb.instructions);
-        double curr_similarity =
-          1.0 - static_cast<double>(curr_distance) / std::max(bb1.instructions.size(), other_bb.instructions.size());
+        double curr_similarity = 1.0 - static_cast<double>(curr_distance) /
+                                         std::max({size_t{1}, bb1.instructions.size(), other_bb.instructions.size()});
 
         if (curr_similarity > best_similarity) {
           best_similarity = curr_similarity;
-          block_similarity = curr_similarity;
         }
       }
+      block_similarity = best_similarity;
     }
 
     if (block_similarity > 0.5) {
@@ -124,32 +120,49 @@ double binary_differ::get_subroutine_similarity(
     }
   }
 
-  return compared_blocks > 0 ? total_similarity / compared_blocks : 0.0;
+  return compared_blocks > 0 ? total_similarity / static_cast<double>(compared_blocks) : 0.0;
 }
 
 auto binary_differ::get_instruction_differences(
   const std::vector<std::string>& seq1, const std::vector<std::string>& seq2
 ) -> std::pair<std::vector<std::string>, std::vector<std::string>> {
   std::vector<std::string> removed, added;
-
   auto lcs = get_lcs(seq1, seq2);
 
-  size_t i = 0, j = 0, k = 0;
-  while (i < seq1.size() || j < seq2.size()) {
-    if (k < lcs.size() && i < seq1.size() && seq1[i] == lcs[k]) {
+  size_t i = 0;
+  size_t j = 0;
+  size_t k = 0;
+
+  while (k < lcs.size()) {
+    // process removals in seq1 until the next lcs element is found
+    while (i < seq1.size() && seq1[i] != lcs[k]) {
+      removed.push_back(seq1[i]);
       i++;
-      k++;
-    } else if (k < lcs.size() && j < seq2.size() && seq2[j] == lcs[k]) {
-      j++;
-      k++;
-    } else {
-      if (i < seq1.size()) {
-        removed.push_back(seq1[i++]);
-      }
-      if (j < seq2.size()) {
-        added.push_back(seq2[j++]);
-      }
     }
+
+    // process additions in seq2 until the next lcs element is found
+    while (j < seq2.size() && seq2[j] != lcs[k]) {
+      added.push_back(seq2[j]);
+      j++;
+    }
+
+    // at this point, seq1[i] == seq2[j] == lcs[k]
+    if (i < seq1.size()) {
+      i++;
+    }
+    if (j < seq2.size()) {
+      j++;
+    }
+    k++;
+  }
+
+  while (i < seq1.size()) {
+    removed.push_back(seq1[i]);
+    i++;
+  }
+  while (j < seq2.size()) {
+    added.push_back(seq2[j]);
+    j++;
   }
 
   return {removed, added};
@@ -157,10 +170,12 @@ auto binary_differ::get_instruction_differences(
 
 std::vector<std::string>
 binary_differ::get_lcs(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2) {
-  std::vector<std::vector<size_t>> dp(seq1.size() + 1, std::vector<size_t>(seq2.size() + 1, 0));
+  const auto m = seq1.size();
+  const auto n = seq2.size();
+  std::vector<std::vector<size_t>> dp(m + 1, std::vector<size_t>(n + 1, 0));
 
-  for (size_t i = 1; i <= seq1.size(); i++) {
-    for (size_t j = 1; j <= seq2.size(); j++) {
+  for (size_t i = 1; i <= m; i++) {
+    for (size_t j = 1; j <= n; j++) {
       if (seq1[i - 1] == seq2[j - 1]) {
         dp[i][j] = dp[i - 1][j - 1] + 1;
       } else {
@@ -170,7 +185,8 @@ binary_differ::get_lcs(const std::vector<std::string>& seq1, const std::vector<s
   }
 
   std::vector<std::string> lcs;
-  size_t i = seq1.size(), j = seq2.size();
+  lcs.reserve(dp[m][n]);
+  size_t i = m, j = n;
   while (i > 0 && j > 0) {
     if (seq1[i - 1] == seq2[j - 1]) {
       lcs.push_back(seq1[i - 1]);
@@ -182,7 +198,7 @@ binary_differ::get_lcs(const std::vector<std::string>& seq1, const std::vector<s
       j--;
     }
   }
-  std::reverse(lcs.begin(), lcs.end());
+  std::ranges::reverse(lcs);
   return lcs;
 }
 
@@ -201,66 +217,47 @@ binary_differ::match_subroutines(
     secondary_map[sub.fingerprint].push_back(&sub);
   }
 
-  std::vector<std::tuple<double, size_t, size_t, std::vector<std::string>>> similarities;
-  std::vector<const subroutine_analyzer::subroutine*> p_subroutines_ptrs;
-  std::vector<const subroutine_analyzer::subroutine*> s_subroutines_ptrs;
+  std::vector<std::tuple<
+    double, const subroutine_analyzer::subroutine*, const subroutine_analyzer::subroutine*, std::vector<std::string>>>
+    similarities;
 
   for (auto const& [fingerprint, p_bucket] : primary_map) {
     auto s_it = secondary_map.find(fingerprint);
     if (s_it != secondary_map.end()) {
       const auto& s_bucket = s_it->second;
-      LOG(
-        "\nComparing bucket with fingerprint (%zu blocks, %zu instructions): %zu primary vs %zu secondary "
-        "subroutines\n",
-        fingerprint.first, fingerprint.second, p_bucket.size(), s_bucket.size()
-      );
 
-      p_subroutines_ptrs.assign(p_bucket.begin(), p_bucket.end());
-      s_subroutines_ptrs.assign(s_bucket.begin(), s_bucket.end());
-
-      for (size_t i = 0; i < p_subroutines_ptrs.size(); ++i) {
-        for (size_t j = 0; j < s_subroutines_ptrs.size(); ++j) {
-          LOG(
-            "Comparing P[idx %zu](0x%llx) vs S[idx %zu](0x%llx)\n", i, p_subroutines_ptrs[i]->start_address, j,
-            s_subroutines_ptrs[j]->start_address
-          );
-
+      for (const auto* p_sub : p_bucket) {
+        for (const auto* s_sub : s_bucket) {
           std::vector<std::string> diff_details;
-          double similarity = get_subroutine_similarity(*p_subroutines_ptrs[i], *s_subroutines_ptrs[j], diff_details);
-          LOG("Similarity: %f\n", similarity);
+          double similarity = get_subroutine_similarity(*p_sub, *s_sub, diff_details);
 
           if (similarity > 0.7) {
-            size_t original_primary_idx = std::distance(primary_subroutines.data(), p_subroutines_ptrs[i]);
-            size_t original_secondary_idx = std::distance(secondary_subroutines.data(), s_subroutines_ptrs[j]);
-
-            similarities.emplace_back(
-              similarity, original_primary_idx, original_secondary_idx, std::move(diff_details)
-            );
+            similarities.emplace_back(similarity, p_sub, s_sub, std::move(diff_details));
           }
         }
       }
     }
   }
 
-  std::sort(
-    similarities.begin(), similarities.end(),
-    std::greater<std::tuple<double, size_t, size_t, std::vector<std::string>>>()
-  );
+  std::ranges::sort(similarities, std::ranges::greater{}, [](const auto& t) {
+    return std::get<0>(t);
+  });
 
   std::vector<std::pair<subroutine_analyzer::subroutine, subroutine_analyzer::subroutine>> matches;
-  std::set<size_t> matched_primary_indices, matched_secondary_indices;
-  for (const auto& [similarity, primary_idx, secondary_idx, details] : similarities) {
-    if (matched_primary_indices.contains(primary_idx) || matched_secondary_indices.contains(secondary_idx)) {
+  std::set<uint64_t> matched_primary_addrs, matched_secondary_addrs;
+  for (const auto& [similarity, primary_sub, secondary_sub, details] : similarities) {
+    if (matched_primary_addrs.contains(primary_sub->start_address) ||
+        matched_secondary_addrs.contains(secondary_sub->start_address)) {
       continue;
     }
 
-    auto primary_copy = primary_subroutines[primary_idx];
+    auto primary_copy = *primary_sub;
     primary_copy.similarity_score = similarity;
     primary_copy.diff_details = details;
 
-    matches.emplace_back(std::move(primary_copy), secondary_subroutines[secondary_idx]);
-    matched_primary_indices.insert(primary_idx);
-    matched_secondary_indices.insert(secondary_idx);
+    matches.emplace_back(std::move(primary_copy), *secondary_sub);
+    matched_primary_addrs.insert(primary_sub->start_address);
+    matched_secondary_addrs.insert(secondary_sub->start_address);
   }
 
   return matches;
