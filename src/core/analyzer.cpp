@@ -95,7 +95,21 @@ std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutine
     functions.push_back(analyze_subroutine(start_address));
   }
 
-  return functions;
+  std::sort(functions.begin(), functions.end(), [](const auto& a, const auto& b) {
+    return a.start_address < b.start_address;
+  });
+
+  std::vector<subroutine> filtered_functions;
+  if (!functions.empty()) {
+    filtered_functions.push_back(functions[0]);
+    for (size_t i = 1; i < functions.size(); ++i) {
+      if (functions[i].start_address >= filtered_functions.back().end_address) {
+        filtered_functions.push_back(functions[i]);
+      }
+    }
+  }
+
+  return filtered_functions;
 }
 
 subroutine_analyzer::subroutine subroutine_analyzer::analyze_subroutine(uint64_t start_address) {
@@ -103,13 +117,8 @@ subroutine_analyzer::subroutine subroutine_analyzer::analyze_subroutine(uint64_t
   function.start_address = start_address;
   function.basic_blocks = find_basic_blocks(start_address);
 
-  size_t total_instructions = 0;
-  for (const auto& block : function.basic_blocks) {
-    total_instructions += block.instructions.size();
-  }
-  function.fingerprint = {function.basic_blocks.size(), total_instructions};
+  function.fingerprint = function.basic_blocks.size();
 
-  // Find the highest address in any basic block for the function end
   function.end_address = start_address;
   for (const auto& block : function.basic_blocks) {
     function.end_address = std::max(function.end_address, block.end_address);
@@ -257,36 +266,60 @@ std::optional<uint64_t> subroutine_analyzer::get_jump_target(
   return std::nullopt;
 }
 
-/*
- * measure the difference between two sequences by
- * calculating the minimum number of single character edits
- * (insertions, deletions, or substitutions)
- * required to change one word into the other.
- */
+// todo: use zydis to normalize instructions?
+static std::string normalize_instruction(std::string_view instruction) {
+  std::string result;
+  result.reserve(instruction.size());
+
+  for (size_t i = 0; i < instruction.size(); ++i) {
+    if (instruction.substr(i).starts_with("0x")) {
+      result += "0x?";
+      i += 2;
+      while (i < instruction.size() && std::isxdigit(instruction[i])) {
+        ++i;
+      }
+      --i;
+    } else {
+      result += instruction[i];
+    }
+  }
+  return result;
+}
+
 std::size_t subroutine_analyzer::levenshtein_distance(
   const std::vector<std::string>& seq1, const std::vector<std::string>& seq2
 ) {
   const size_t m = seq1.size();
   const size_t n = seq2.size();
 
+  const size_t INSERT_DELETE_COST = 100;
+  const size_t MISMATCH_COST = 100;
+  const size_t NORMALIZED_MATCH_COST = 10;
+
   std::vector<std::vector<size_t>> dp(m + 1, std::vector<size_t>(n + 1));
 
   for (size_t i = 0; i <= m; i++)
-    dp[i][0] = i;
+    dp[i][0] = i * INSERT_DELETE_COST;
   for (size_t j = 0; j <= n; j++)
-    dp[0][j] = j;
+    dp[0][j] = j * INSERT_DELETE_COST;
 
   for (size_t i = 1; i <= m; i++) {
     for (size_t j = 1; j <= n; j++) {
-      if (seq1[i - 1] == seq2[j - 1])
-        dp[i][j] = dp[i - 1][j - 1];
-      else
-        // clang-format off
-        dp[i][j] = 1 + std::min({
-          dp[i - 1][j],    // deletion
-          dp[i][j - 1],    // insertion
-          dp[i - 1][j - 1] // substitution
-        });
+      size_t substitution_cost;
+      if (seq1[i - 1] == seq2[j - 1]) {
+        substitution_cost = 0;
+      } else if (normalize_instruction(seq1[i - 1]) == normalize_instruction(seq2[j - 1])) {
+        substitution_cost = NORMALIZED_MATCH_COST;
+      } else {
+        substitution_cost = MISMATCH_COST;
+      }
+
+      // clang-format off
+      dp[i][j] = std::min({
+        dp[i - 1][j] + INSERT_DELETE_COST,    // deletion
+        dp[i][j - 1] + INSERT_DELETE_COST,    // insertion
+        dp[i - 1][j - 1] + substitution_cost  // substitution
+      });
       // clang-format on
     }
   }

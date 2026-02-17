@@ -74,7 +74,7 @@ double binary_differ::get_subroutine_similarity(
     }
 
     double block_similarity =
-      1.0 - static_cast<double>(distance) / std::max({size_t{1}, bb1.instructions.size(), bb2.instructions.size()});
+      1.0 - static_cast<double>(distance) / (std::max({size_t{1}, bb1.instructions.size(), bb2.instructions.size()}) * 100.0);
 
     // if blocks at the same index are very different
     // try to find a better match elsewhere
@@ -83,7 +83,7 @@ double binary_differ::get_subroutine_similarity(
       for (const auto& other_bb : s2.basic_blocks) {
         auto curr_distance = subroutine_analyzer::levenshtein_distance(bb1.instructions, other_bb.instructions);
         double curr_similarity = 1.0 - static_cast<double>(curr_distance) /
-                                         std::max({size_t{1}, bb1.instructions.size(), other_bb.instructions.size()});
+                                         (std::max({size_t{1}, bb1.instructions.size(), other_bb.instructions.size()}) * 100.0);
 
         if (curr_similarity > best_similarity) {
           best_similarity = curr_similarity;
@@ -207,30 +207,28 @@ binary_differ::match_subroutines(
   const std::vector<subroutine_analyzer::subroutine>& primary_subroutines,
   const std::vector<subroutine_analyzer::subroutine>& secondary_subroutines
 ) {
-  std::unordered_map<fingerprint, std::vector<const subroutine_analyzer::subroutine*>, fingerprint_hash> primary_map;
+  std::unordered_map<fingerprint, std::vector<const subroutine_analyzer::subroutine*>> primary_map;
   for (const auto& sub : primary_subroutines) {
     primary_map[sub.fingerprint].push_back(&sub);
   }
 
-  std::unordered_map<fingerprint, std::vector<const subroutine_analyzer::subroutine*>, fingerprint_hash> secondary_map;
+  std::unordered_map<fingerprint, std::vector<const subroutine_analyzer::subroutine*>> secondary_map;
   for (const auto& sub : secondary_subroutines) {
     secondary_map[sub.fingerprint].push_back(&sub);
   }
 
-  std::vector<std::tuple<
-    double, const subroutine_analyzer::subroutine*, const subroutine_analyzer::subroutine*, std::vector<std::string>>>
-    similarities;
+  using match_candidate = std::tuple<
+    double, const subroutine_analyzer::subroutine*, const subroutine_analyzer::subroutine*, std::vector<std::string>>;
+  std::vector<match_candidate> similarities;
 
   for (auto const& [fingerprint, p_bucket] : primary_map) {
     auto s_it = secondary_map.find(fingerprint);
     if (s_it != secondary_map.end()) {
       const auto& s_bucket = s_it->second;
-
       for (const auto* p_sub : p_bucket) {
         for (const auto* s_sub : s_bucket) {
           std::vector<std::string> diff_details;
           double similarity = get_subroutine_similarity(*p_sub, *s_sub, diff_details);
-
           if (similarity > 0.7) {
             similarities.emplace_back(similarity, p_sub, s_sub, std::move(diff_details));
           }
@@ -245,19 +243,53 @@ binary_differ::match_subroutines(
 
   std::vector<std::pair<subroutine_analyzer::subroutine, subroutine_analyzer::subroutine>> matches;
   std::set<uint64_t> matched_primary_addrs, matched_secondary_addrs;
-  for (const auto& [similarity, primary_sub, secondary_sub, details] : similarities) {
-    if (matched_primary_addrs.contains(primary_sub->start_address) ||
-        matched_secondary_addrs.contains(secondary_sub->start_address)) {
-      continue;
+
+  auto resolve_matches = [&](const std::vector<match_candidate>& cands) {
+    for (const auto& [similarity, primary_sub, secondary_sub, details] : cands) {
+      if (matched_primary_addrs.contains(primary_sub->start_address) ||
+          matched_secondary_addrs.contains(secondary_sub->start_address)) {
+        continue;
+      }
+      auto primary_copy = *primary_sub;
+      primary_copy.similarity_score = similarity;
+      primary_copy.diff_details = details;
+      matches.emplace_back(std::move(primary_copy), *secondary_sub);
+      matched_primary_addrs.insert(primary_sub->start_address);
+      matched_secondary_addrs.insert(secondary_sub->start_address);
     }
+  };
 
-    auto primary_copy = *primary_sub;
-    primary_copy.similarity_score = similarity;
-    primary_copy.diff_details = details;
+  resolve_matches(similarities);
 
-    matches.emplace_back(std::move(primary_copy), *secondary_sub);
-    matched_primary_addrs.insert(primary_sub->start_address);
-    matched_secondary_addrs.insert(secondary_sub->start_address);
+  std::vector<const subroutine_analyzer::subroutine*> unmatched_primary;
+  for (const auto& sub : primary_subroutines) {
+    if (!matched_primary_addrs.contains(sub.start_address)) {
+      unmatched_primary.push_back(&sub);
+    }
+  }
+
+  std::vector<const subroutine_analyzer::subroutine*> unmatched_secondary;
+  for (const auto& sub : secondary_subroutines) {
+    if (!matched_secondary_addrs.contains(sub.start_address)) {
+      unmatched_secondary.push_back(&sub);
+    }
+  }
+
+  if (!unmatched_primary.empty() && !unmatched_secondary.empty()) {
+    similarities.clear();
+    for (const auto* p_sub : unmatched_primary) {
+      for (const auto* s_sub : unmatched_secondary) {
+        std::vector<std::string> diff_details;
+        double similarity = get_subroutine_similarity(*p_sub, *s_sub, diff_details);
+        if (similarity > 0.5) {
+          similarities.emplace_back(similarity, p_sub, s_sub, std::move(diff_details));
+        }
+      }
+    }
+    std::ranges::sort(similarities, std::ranges::greater{}, [](const auto& t) {
+      return std::get<0>(t);
+    });
+    resolve_matches(similarities);
   }
 
   return matches;

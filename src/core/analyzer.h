@@ -10,15 +10,7 @@
 #include <utility>
 #include <vector>
 
-using fingerprint = std::pair<size_t, size_t>;
-
-struct fingerprint_hash {
-  std::size_t operator()(const fingerprint& fp) const {
-    auto hash1 = std::hash<size_t>{}(fp.first);
-    auto hash2 = std::hash<size_t>{}(fp.second);
-    return hash1 ^ (hash2 + 0x9e3779b9 + (hash1 << 6) + (hash1 >> 2));
-  }
-};
+using fingerprint = size_t;
 
 class subroutine_analyzer {
   public:
