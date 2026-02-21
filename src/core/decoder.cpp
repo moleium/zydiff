@@ -6,43 +6,38 @@ decoder::decoder() {
 }
 
 auto decoder::disassemble(uint64_t address, const unsigned char* data, size_t size) -> bool {
-  if (data == nullptr || size == 0)
+  if (data == nullptr || size == 0) {
     return false;
+  }
 
   address_ = address;
   success_ = false;
 
-  if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder_, data, size, &instruction_.info, instruction_.operands)))
+  if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder_, data, size, &instruction_.info, instruction_.operands))) {
     return false;
+  }
 
   if (!ZYAN_SUCCESS(ZydisFormatterFormatInstruction(
-    &formatter_,
-    &instruction_.info,
-    instruction_.operands,
-    instruction_.info.operand_count,
-    instruction_text_,
-    sizeof(instruction_text_),
-    address_,
-    nullptr)))
+        &formatter_, &instruction_.info, instruction_.operands, instruction_.info.operand_count, instruction_text_,
+        sizeof(instruction_text_), address_, nullptr
+      ))) {
     return false;
+  }
 
   visible_operand_count_ = 0;
-  for (auto& operand : instruction_.operands)
-  {
-    if (operand.visibility == ZYDIS_OPERAND_VISIBILITY_HIDDEN)
+  for (auto& operand : instruction_.operands) {
+    if (operand.visibility == ZYDIS_OPERAND_VISIBILITY_HIDDEN) {
       break;
+    }
 
-    if (operand.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && operand.imm.is_relative)
-    {
+    if (operand.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && operand.imm.is_relative) {
       ZydisCalcAbsoluteAddress(&instruction_.info, &operand, address_, &operand.imm.value.u);
       operand.imm.is_relative = false;
-    }
-    else if (operand.type == ZYDIS_OPERAND_TYPE_MEMORY &&
-      operand.mem.base == ZYDIS_REGISTER_NONE &&
-      operand.mem.index == ZYDIS_REGISTER_NONE &&
-      operand.mem.disp.value != 0)
-    {
-      ZydisCalcAbsoluteAddress(&instruction_.info, &operand, address_, (uint64_t*)&operand.mem.disp.value);
+    } else if (operand.type == ZYDIS_OPERAND_TYPE_MEMORY && operand.mem.base == ZYDIS_REGISTER_NONE &&
+               operand.mem.index == ZYDIS_REGISTER_NONE && operand.mem.disp.value != 0) {
+      ZydisCalcAbsoluteAddress(
+        &instruction_.info, &operand, address_, reinterpret_cast<uint64_t*>(&operand.mem.disp.value)
+      );
     }
 
     ++visible_operand_count_;
@@ -62,7 +57,7 @@ auto decoder::disassemble(uint64_t address, const unsigned char* data, size_t si
 [[nodiscard]] auto decoder::get_instruction_bytes(const unsigned char* data) const -> std::string {
   if (success_) {
     std::string bytes;
-    for (int j = 0; j < instruction_.info.length; j++) {
+    for (uint8_t j = 0; j < instruction_.info.length; j++) {
       bytes += std::format("{:02x} ", static_cast<int>(data[j]));
     }
     return bytes;

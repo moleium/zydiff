@@ -286,9 +286,8 @@ static std::string normalize_instruction(std::string_view instruction) {
   return result;
 }
 
-std::size_t subroutine_analyzer::levenshtein_distance(
-  const std::vector<std::string>& seq1, const std::vector<std::string>& seq2
-) {
+std::size_t
+subroutine_analyzer::levenshtein_distance(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2) {
   const size_t m = seq1.size();
   const size_t n = seq2.size();
 
