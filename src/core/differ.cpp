@@ -80,8 +80,6 @@ double binary_differ::get_subroutine_similarity(
 
     const subroutine_analyzer::basic_block* matched_bb2 = &bb2;
 
-    // if blocks at the same index are very different
-    // try to find a better match elsewhere
     if (block_similarity < 0.3) {
       double best_similarity = block_similarity;
       for (const auto& other_bb : s2.basic_blocks) {
@@ -106,34 +104,23 @@ double binary_differ::get_subroutine_similarity(
         block_similarity * 100
       );
 
-      auto [removed, added] = get_instruction_differences(bb1.instructions, matched_bb2->instructions);
-      if (!removed.empty()) {
-        diff_detail += "  Removed:\n";
-        for (const auto& instr : removed) {
-          diff_detail += "    - " + instr + "\n";
-        }
-      }
-      if (!added.empty()) {
-        diff_detail += "  Added:\n";
-        for (const auto& instr : added) {
-          diff_detail += "    + " + instr + "\n";
-        }
+      auto unified_diff = get_instruction_differences(bb1.instructions, matched_bb2->instructions);
+      for (const auto& [op, instr] : unified_diff) {
+        diff_detail += std::format("{} {}\n", op, instr);
       }
 
       diff_details.emplace_back(std::move(diff_detail));
     }
   }
 
-  // penalize subroutines with widely differing block counts or unmatched blocks
   size_t max_blocks = std::max({size_t{1}, s1.basic_blocks.size(), s2.basic_blocks.size()});
   return total_similarity / static_cast<double>(max_blocks);
 }
 
 auto binary_differ::get_instruction_differences(
   const std::vector<std::string>& seq1, const std::vector<std::string>& seq2
-) -> std::pair<std::vector<std::string>, std::vector<std::string>> {
-  std::vector<std::string> removed;
-  std::vector<std::string> added;
+) -> std::vector<std::pair<char, std::string>> {
+  std::vector<std::pair<char, std::string>> diff;
   auto lcs = get_lcs(seq1, seq2);
 
   size_t i = 0;
@@ -142,34 +129,31 @@ auto binary_differ::get_instruction_differences(
 
   while (k < lcs.size()) {
     while (i < seq1.size() && seq1[i] != lcs[k]) {
-      removed.push_back(seq1[i]);
+      diff.emplace_back('-', seq1[i]);
       i++;
     }
 
     while (j < seq2.size() && seq2[j] != lcs[k]) {
-      added.push_back(seq2[j]);
+      diff.emplace_back('+', seq2[j]);
       j++;
     }
 
-    if (i < seq1.size()) {
-      i++;
-    }
-    if (j < seq2.size()) {
-      j++;
-    }
+    diff.emplace_back('=', lcs[k]);
+    i++;
+    j++;
     k++;
   }
 
   while (i < seq1.size()) {
-    removed.push_back(seq1[i]);
+    diff.emplace_back('-', seq1[i]);
     i++;
   }
   while (j < seq2.size()) {
-    added.push_back(seq2[j]);
+    diff.emplace_back('+', seq2[j]);
     j++;
   }
 
-  return {removed, added};
+  return diff;
 }
 
 std::vector<std::string>
@@ -242,7 +226,6 @@ binary_differ::match_subroutines(
     }
   }
 
-  // favor higher similarities then exact addresses then nearest addresses
   auto sort_candidates = [](const match_candidate& a, const match_candidate& b) {
     double sim_a = std::get<0>(a);
     double sim_b = std::get<0>(b);

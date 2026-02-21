@@ -30,7 +30,7 @@ class binary_differ {
           const std::vector<subroutine_analyzer::subroutine>& secondary_subroutines
   );
 
-  std::pair<std::vector<std::string>, std::vector<std::string>>
+  std::vector<std::pair<char, std::string>>
   get_instruction_differences(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2);
 
   std::vector<std::string> get_lcs(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2);
