@@ -1,10 +1,185 @@
 #include "parser.h"
 #include <algorithm>
 #include <cstring>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <vector>
 #include "headers/elf_header.h"
 #include "headers/pe_header.h"
+
+namespace {
+
+  constexpr uint8_t dw_eh_pe_omit = 0xff;
+  constexpr uint8_t dw_eh_pe_absptr = 0x00;
+  constexpr uint8_t dw_eh_pe_uleb128 = 0x01;
+  constexpr uint8_t dw_eh_pe_udata2 = 0x02;
+  constexpr uint8_t dw_eh_pe_udata4 = 0x03;
+  constexpr uint8_t dw_eh_pe_udata8 = 0x04;
+  constexpr uint8_t dw_eh_pe_sleb128 = 0x09;
+  constexpr uint8_t dw_eh_pe_sdata2 = 0x0a;
+  constexpr uint8_t dw_eh_pe_sdata4 = 0x0b;
+  constexpr uint8_t dw_eh_pe_sdata8 = 0x0c;
+  constexpr uint8_t dw_eh_pe_format_mask = 0x0f;
+  constexpr uint8_t dw_eh_pe_pcrel = 0x10;
+  constexpr uint8_t dw_eh_pe_datarel = 0x30;
+  constexpr uint8_t dw_eh_pe_application_mask = 0x70;
+  constexpr uint8_t dw_eh_pe_indirect = 0x80;
+
+  template <typename value_type>
+  [[nodiscard]] auto read_little_endian(std::span<const uint8_t> data, size_t& offset) -> std::optional<value_type> {
+    if (sizeof(value_type) > data.size() - offset) {
+      return std::nullopt;
+    }
+
+    value_type value{};
+    std::memcpy(&value, data.data() + offset, sizeof(value_type));
+    offset += sizeof(value_type);
+    return value;
+  }
+
+  [[nodiscard]] auto read_uleb128(std::span<const uint8_t> data, size_t& offset) -> std::optional<uint64_t> {
+    uint64_t result = 0;
+    uint32_t shift = 0;
+
+    while (offset < data.size() && shift < 64) {
+      const auto byte = data[offset++];
+      result |= static_cast<uint64_t>(byte & 0x7f) << shift;
+      if ((byte & 0x80) == 0) {
+        return result;
+      }
+      shift += 7;
+    }
+
+    return std::nullopt;
+  }
+
+  [[nodiscard]] auto read_sleb128(std::span<const uint8_t> data, size_t& offset) -> std::optional<int64_t> {
+    uint64_t result = 0;
+    uint32_t shift = 0;
+    uint8_t byte = 0;
+
+    while (offset < data.size() && shift < 64) {
+      byte = data[offset++];
+      result |= static_cast<uint64_t>(byte & 0x7f) << shift;
+      shift += 7;
+      if ((byte & 0x80) == 0) {
+        if (shift < 64 && (byte & 0x40) != 0) {
+          result |= (~uint64_t{0}) << shift;
+        }
+        return static_cast<int64_t>(result);
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  [[nodiscard]] auto add_signed(uint64_t lhs, int64_t rhs) -> uint64_t {
+    if (rhs < 0) {
+      return lhs - static_cast<uint64_t>(-rhs);
+    }
+    return lhs + static_cast<uint64_t>(rhs);
+  }
+
+  [[nodiscard]] auto
+  decode_eh_value(std::span<const uint8_t> data, size_t& offset, uint8_t encoding, uint64_t section_address)
+    -> std::optional<uint64_t> {
+    // decode dwarf eh pointer encodings without reading the full frame data
+    if (encoding == dw_eh_pe_omit || (encoding & dw_eh_pe_indirect) != 0) {
+      return std::nullopt;
+    }
+
+    const auto value_address = section_address + offset;
+    uint64_t raw_unsigned = 0;
+    int64_t raw_signed = 0;
+    bool is_signed = false;
+
+    switch (encoding & dw_eh_pe_format_mask) {
+      case dw_eh_pe_absptr: {
+        auto value = read_little_endian<uint64_t>(data, offset);
+        if (!value)
+          return std::nullopt;
+        raw_unsigned = *value;
+        break;
+      }
+      case dw_eh_pe_uleb128: {
+        auto value = read_uleb128(data, offset);
+        if (!value)
+          return std::nullopt;
+        raw_unsigned = *value;
+        break;
+      }
+      case dw_eh_pe_udata2: {
+        auto value = read_little_endian<uint16_t>(data, offset);
+        if (!value)
+          return std::nullopt;
+        raw_unsigned = *value;
+        break;
+      }
+      case dw_eh_pe_udata4: {
+        auto value = read_little_endian<uint32_t>(data, offset);
+        if (!value)
+          return std::nullopt;
+        raw_unsigned = *value;
+        break;
+      }
+      case dw_eh_pe_udata8: {
+        auto value = read_little_endian<uint64_t>(data, offset);
+        if (!value)
+          return std::nullopt;
+        raw_unsigned = *value;
+        break;
+      }
+      case dw_eh_pe_sleb128: {
+        auto value = read_sleb128(data, offset);
+        if (!value)
+          return std::nullopt;
+        raw_signed = *value;
+        is_signed = true;
+        break;
+      }
+      case dw_eh_pe_sdata2: {
+        auto value = read_little_endian<int16_t>(data, offset);
+        if (!value)
+          return std::nullopt;
+        raw_signed = *value;
+        is_signed = true;
+        break;
+      }
+      case dw_eh_pe_sdata4: {
+        auto value = read_little_endian<int32_t>(data, offset);
+        if (!value)
+          return std::nullopt;
+        raw_signed = *value;
+        is_signed = true;
+        break;
+      }
+      case dw_eh_pe_sdata8: {
+        auto value = read_little_endian<int64_t>(data, offset);
+        if (!value)
+          return std::nullopt;
+        raw_signed = *value;
+        is_signed = true;
+        break;
+      }
+      default:
+        return std::nullopt;
+    }
+
+    auto value = is_signed ? add_signed(0, raw_signed) : raw_unsigned;
+    switch (encoding & dw_eh_pe_application_mask) {
+      case 0:
+        return value;
+      case dw_eh_pe_pcrel:
+        return is_signed ? add_signed(value_address, raw_signed) : value_address + raw_unsigned;
+      case dw_eh_pe_datarel:
+        return is_signed ? add_signed(section_address, raw_signed) : section_address + raw_unsigned;
+      default:
+        return std::nullopt;
+    }
+  }
+
+} // namespace
 
 binary_parser::binary_parser(const std::string& path) : path_(path), image_base_(0) {
   detect_and_parse();
@@ -70,6 +245,8 @@ void binary_parser::parse_pe(std::ifstream& file) {
     sect.name = std::string(s_header.name, strnlen(s_header.name, 8));
     sect.virtual_address = s_header.virtual_address;
     sect.size = s_header.size_of_raw_data;
+    sect.file_offset = s_header.pointer_to_raw_data;
+    sect.flags = 0;
 
     LOG("Found section: %s, VA: 0x%x, Size: 0x%x\n", sect.name.c_str(), sect.virtual_address, sect.size);
 
@@ -115,6 +292,8 @@ void binary_parser::parse_elf(std::ifstream& file) {
       sect.name = std::string(string_table.data() + section_h.sh_name);
       sect.virtual_address = section_h.sh_addr;
       sect.size = section_h.sh_size;
+      sect.file_offset = section_h.sh_offset;
+      sect.flags = section_h.sh_flags;
 
       LOG("Found section: %s, VA: 0x%llx, Size: 0x%llx\n", sect.name.c_str(), sect.virtual_address, sect.size);
 
@@ -129,6 +308,8 @@ void binary_parser::parse_elf(std::ifstream& file) {
       sections_.push_back(std::move(sect));
     }
   }
+
+  parse_elf_frame_header();
 }
 
 const binary_parser::section* binary_parser::get_text_section() const {
@@ -145,6 +326,68 @@ const binary_parser::section* binary_parser::get_text_section() const {
   return nullptr;
 }
 
+const binary_parser::section* binary_parser::get_section(std::string_view name) const {
+  for (const auto& sect : sections_) {
+    if (sect.name == name) {
+      return &sect;
+    }
+  }
+  return nullptr;
+}
+
+const std::vector<uint64_t>& binary_parser::get_function_starts() const {
+  return function_starts_;
+}
+
 uint64_t binary_parser::get_image_base() const {
   return image_base_;
+}
+
+void binary_parser::parse_elf_frame_header() {
+  const auto* frame_header = get_section(".eh_frame_hdr");
+  const auto* text = get_text_section();
+  if (frame_header == nullptr || text == nullptr || frame_header->data.size() < 4) {
+    return;
+  }
+
+  const std::span<const uint8_t> data(frame_header->data);
+  size_t offset = 0;
+  const auto version = data[offset++];
+  const auto frame_ptr_encoding = data[offset++];
+  const auto fde_count_encoding = data[offset++];
+  const auto table_encoding = data[offset++];
+  if (version != 1 || fde_count_encoding == dw_eh_pe_omit || table_encoding == dw_eh_pe_omit) {
+    return;
+  }
+
+  if (!decode_eh_value(data, offset, frame_ptr_encoding, frame_header->virtual_address)) {
+    return;
+  }
+
+  const auto fde_count = decode_eh_value(data, offset, fde_count_encoding, frame_header->virtual_address);
+  if (!fde_count) {
+    return;
+  }
+
+  const auto text_begin = text->virtual_address;
+  const auto text_end = text_begin + text->size;
+  function_starts_.clear();
+  function_starts_.reserve(static_cast<size_t>(*fde_count));
+
+  // use unwind entries as starts for stripped elf binaries
+  for (uint64_t i = 0; i < *fde_count; ++i) {
+    auto function_start = decode_eh_value(data, offset, table_encoding, frame_header->virtual_address);
+    auto fde_address = decode_eh_value(data, offset, table_encoding, frame_header->virtual_address);
+    if (!function_start || !fde_address) {
+      function_starts_.clear();
+      return;
+    }
+
+    if (*function_start >= text_begin && *function_start < text_end) {
+      function_starts_.push_back(*function_start);
+    }
+  }
+
+  std::ranges::sort(function_starts_);
+  function_starts_.erase(std::ranges::unique(function_starts_).begin(), function_starts_.end());
 }

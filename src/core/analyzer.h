@@ -6,6 +6,7 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <span>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -26,26 +27,38 @@ class subroutine_analyzer {
     uint64_t end_address;
     std::vector<basic_block> basic_blocks;
     fingerprint fingerprint;
+    size_t byte_size{0};
+    uint64_t byte_hash{0};
+    size_t instruction_count{0};
+    uint64_t instruction_hash{0};
     double similarity_score{0.0};
     std::vector<std::string> diff_details;
   };
 
   subroutine_analyzer(const uint8_t* data, size_t size, uint64_t base_address);
+  subroutine_analyzer(
+    const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
+    bool decode_instructions = true
+  );
 
   std::vector<subroutine> get_subroutines();
 
   static std::size_t levenshtein_distance(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2);
 
   private:
-  std::vector<basic_block> find_basic_blocks(uint64_t start_address);
-  subroutine analyze_subroutine(uint64_t start_address);
+  std::vector<basic_block> find_basic_blocks(uint64_t start_address, std::optional<uint64_t> end_address_hint);
+  subroutine analyze_subroutine(uint64_t start_address, std::optional<uint64_t> end_address_hint);
+  subroutine analyze_range(uint64_t start_address, uint64_t end_address);
+  void set_byte_fingerprint(subroutine& function);
+  void set_instruction_fingerprint(subroutine& function);
+  std::vector<uint64_t> discover_subroutine_starts();
 
   bool is_jmp(const ZydisDecodedInstruction& instruction) const;
   bool is_call(const ZydisDecodedInstruction& instruction) const;
   bool is_return(const ZydisDecodedInstruction& instruction) const;
   bool is_control_flow(const ZydisDecodedInstruction& instruction);
   std::optional<uint64_t> get_jump_target(
-          const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands, uint64_t current_address
+    const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands, uint64_t current_address
   ) const;
 
   static double get_similarity_score(const std::string& first, const std::string& second);
@@ -54,5 +67,7 @@ class subroutine_analyzer {
   const uint8_t* data_;
   size_t size_;
   uint64_t base_address_;
+  std::vector<uint64_t> known_starts_;
+  bool decode_instructions_{true};
   decoder decoder_;
 };

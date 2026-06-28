@@ -8,6 +8,7 @@ using elf64_word = uint32_t;
 using elf64_xword = uint64_t;
 
 constexpr int EI_NIDENT = 16;
+constexpr elf64_xword SHF_EXECINSTR = 0x4;
 
 #pragma pack(push, 1)
 struct elf64_ehdr {
@@ -52,4 +53,3 @@ constexpr char ELFMAG0 = 0x7f;
 constexpr char ELFMAG1 = 'E';
 constexpr char ELFMAG2 = 'L';
 constexpr char ELFMAG3 = 'F';
-

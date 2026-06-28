@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <charconv>
 #include <map>
+#include <optional>
 #include <print>
 #include <string>
 #include <string_view>
@@ -10,6 +12,19 @@
 struct diff_line {
   char op;
   std::string text;
+};
+
+struct display_options {
+  bool summary_only{false};
+  bool show_unchanged{false};
+  size_t limit{100};
+};
+
+struct cli_options {
+  display_options display;
+  bool decode_instructions{true};
+  std::string primary_path;
+  std::string secondary_path;
 };
 
 std::vector<diff_line>
@@ -48,7 +63,63 @@ generate_diff(const std::vector<std::string>& primary, const std::vector<std::st
   return diff;
 }
 
-void format_results(const binary_differ::diff_result& result) {
+void print_usage(std::string_view executable) {
+  std::println(
+    stderr,
+    "Usage: {} [--summary] [--no-instructions] [--show-unchanged] [--limit count] <primary_binary> <secondary_binary>",
+    executable
+  );
+}
+
+auto parse_args(int argc, char* argv[]) -> std::optional<cli_options> {
+  cli_options options;
+  std::vector<std::string> paths;
+
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg(argv[i]);
+    if (arg == "--summary") {
+      options.display.summary_only = true;
+      options.decode_instructions = false;
+    } else if (arg == "--no-instructions") {
+      options.decode_instructions = false;
+    } else if (arg == "--show-unchanged") {
+      options.display.show_unchanged = true;
+    } else if (arg == "--limit") {
+      if (i + 1 >= argc) {
+        return std::nullopt;
+      }
+      const std::string_view value(argv[++i]);
+      size_t parsed_limit = 0;
+      const auto* begin = value.data();
+      const auto* end = value.data() + value.size();
+      auto [ptr, ec] = std::from_chars(begin, end, parsed_limit);
+      if (ec != std::errc{} || ptr != end) {
+        return std::nullopt;
+      }
+      options.display.limit = parsed_limit;
+    } else if (arg == "--help" || arg == "-h") {
+      return std::nullopt;
+    } else {
+      paths.emplace_back(arg);
+    }
+  }
+
+  if (paths.size() != 2) {
+    return std::nullopt;
+  }
+
+  options.primary_path = std::move(paths[0]);
+  options.secondary_path = std::move(paths[1]);
+  return options;
+}
+
+void print_limit_notice(std::string_view label, size_t printed, size_t total) {
+  if (printed < total) {
+    std::println("  ... {} more {} omitted", total - printed, label);
+  }
+}
+
+void format_results(const binary_differ::diff_result& result, const display_options& options) {
   using namespace std::literals;
   using subroutine_pair = std::pair<subroutine_analyzer::subroutine, subroutine_analyzer::subroutine>;
 
@@ -87,8 +158,7 @@ void format_results(const binary_differ::diff_result& result) {
   size_t modified_count = 0;
   size_t unchanged_count = 0;
   for (const auto& [primary, secondary] : modified_result) {
-    if (primary.start_address == secondary.start_address &&
-        primary.basic_blocks.size() == secondary.basic_blocks.size() && primary.similarity_score == 1.0) {
+    if (primary.similarity_score == 1.0) {
       unchanged_count++;
     } else {
       modified_count++;
@@ -99,31 +169,57 @@ void format_results(const binary_differ::diff_result& result) {
   std::println("{}- {} subroutines removed{}", red, truly_unmatched_primary.size(), reset);
   std::println("{}~ {} subroutines modified{}", yellow, modified_count, reset);
   std::println("= {} subroutines unchanged\n", unchanged_count);
+  std::println("primary subroutines: {}", result.primary_subroutine_count);
+  std::println("secondary subroutines: {}", result.secondary_subroutine_count);
+  if (result.skipped_pairwise_candidates > 0) {
+    std::println("skipped broad match candidates: {}", result.skipped_pairwise_candidates);
+  }
+
+  if (options.summary_only) {
+    return;
+  }
 
   if (!truly_unmatched_secondary.empty()) {
     std::println(":: Added Subroutines (in secondary only)");
-    for (const auto& sub : truly_unmatched_secondary) {
+    const auto print_count = std::min(options.limit, truly_unmatched_secondary.size());
+    for (size_t i = 0; i < print_count; ++i) {
+      const auto& sub = truly_unmatched_secondary[i];
       std::println("{}+ Added: subroutine at {}{:08x}{}", green, blue, sub.start_address, reset);
     }
+    print_limit_notice("added subroutines", print_count, truly_unmatched_secondary.size());
   }
 
   if (!truly_unmatched_primary.empty()) {
     std::println("\n:: Removed Subroutines (in primary only)");
-    for (const auto& sub : truly_unmatched_primary) {
+    const auto print_count = std::min(options.limit, truly_unmatched_primary.size());
+    for (size_t i = 0; i < print_count; ++i) {
+      const auto& sub = truly_unmatched_primary[i];
       std::println("{}- Removed: subroutine at {}{:08x}{}", red, blue, sub.start_address, reset);
     }
+    print_limit_notice("removed subroutines", print_count, truly_unmatched_primary.size());
   }
 
   if (!modified_result.empty()) {
+    size_t printed = 0;
     for (const auto& [primary, secondary] : modified_result) {
-      bool is_unchanged = primary.similarity_score == 1.0 && primary.start_address == secondary.start_address &&
-                          primary.basic_blocks.size() == secondary.basic_blocks.size();
+      bool is_unchanged = primary.similarity_score == 1.0;
 
       if (is_unchanged) {
+        if (!options.show_unchanged) {
+          continue;
+        }
+        if (printed >= options.limit) {
+          continue;
+        }
         std::println(
           "= Unchanged: {}{:08x}{} -> {}{:08x}{}", blue, primary.start_address, reset, blue, secondary.start_address,
           reset
         );
+        ++printed;
+        continue;
+      }
+
+      if (printed >= options.limit) {
         continue;
       }
 
@@ -131,6 +227,7 @@ void format_results(const binary_differ::diff_result& result) {
         "{}~ Modified: {}{:08x}{} -> {}{:08x}{}", yellow, blue, primary.start_address, reset, blue,
         secondary.start_address, reset
       );
+      ++printed;
 
       size_t common_blocks = std::min(primary.basic_blocks.size(), secondary.basic_blocks.size());
       for (size_t i = 0; i < common_blocks; ++i) {
@@ -164,19 +261,25 @@ void format_results(const binary_differ::diff_result& result) {
         }
       }
     }
+    print_limit_notice(
+      "matched subroutines", printed, options.show_unchanged ? modified_result.size() : modified_count
+    );
   }
 }
 
 int main(int argc, char* argv[]) {
-  if (argc != 3) {
-    std::println(stderr, "Usage: {} <primary_binary> <secondary_binary>", argv[0]);
+  auto options = parse_args(argc, argv);
+  if (!options) {
+    print_usage(argv[0]);
     return 1;
   }
 
   try {
-    binary_differ differ(argv[1], argv[2]);
+    binary_differ::compare_options compare_options;
+    compare_options.decode_instructions = options->decode_instructions;
+    binary_differ differ(options->primary_path, options->secondary_path, compare_options);
     auto result = differ.compare();
-    format_results(result);
+    format_results(result, options->display);
   } catch (const std::exception& e) {
     std::println(stderr, "Error: {}", e.what());
     return 1;
@@ -184,4 +287,3 @@ int main(int argc, char* argv[]) {
 
   return 0;
 }
-
