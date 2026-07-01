@@ -335,6 +335,10 @@ const binary_parser::section* binary_parser::get_section(std::string_view name) 
   return nullptr;
 }
 
+const std::vector<binary_parser::section>& binary_parser::get_sections() const {
+  return sections_;
+}
+
 const std::vector<uint64_t>& binary_parser::get_function_starts() const {
   return function_starts_;
 }

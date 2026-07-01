@@ -3,6 +3,7 @@
 
 constexpr uint16_t IMAGE_DOS_SIGNATURE = 0x5A4D;
 constexpr uint32_t IMAGE_NT_SIGNATURE = 0x00004550;
+constexpr uint32_t IMAGE_SCN_MEM_EXECUTE = 0x20000000;
 
 #pragma pack(push, 1)
 struct dos_header {

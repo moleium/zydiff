@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 #include "core/differ.h"
+#include "core/string_diff.h"
 #include "logger.h"
 
 struct diff_line {
@@ -23,6 +24,7 @@ struct display_options {
 struct cli_options {
   display_options display;
   bool decode_instructions{true};
+  bool string_diff{false};
   std::string primary_path;
   std::string secondary_path;
 };
@@ -66,7 +68,7 @@ generate_diff(const std::vector<std::string>& primary, const std::vector<std::st
 void print_usage(std::string_view executable) {
   std::println(
     stderr,
-    "Usage: {} [--summary] [--no-instructions] [--show-unchanged] [--limit count] <primary_binary> <secondary_binary>",
+    "Usage: {} [--summary] [--strings] [--no-instructions] [--show-unchanged] [--limit count] <primary_binary> <secondary_binary>",
     executable
   );
 }
@@ -79,6 +81,9 @@ auto parse_args(int argc, char* argv[]) -> std::optional<cli_options> {
     const std::string_view arg(argv[i]);
     if (arg == "--summary") {
       options.display.summary_only = true;
+      options.decode_instructions = false;
+    } else if (arg == "--strings") {
+      options.string_diff = true;
       options.decode_instructions = false;
     } else if (arg == "--no-instructions") {
       options.decode_instructions = false;
@@ -116,6 +121,51 @@ auto parse_args(int argc, char* argv[]) -> std::optional<cli_options> {
 void print_limit_notice(std::string_view label, size_t printed, size_t total) {
   if (printed < total) {
     std::println("  ... {} more {} omitted", total - printed, label);
+  }
+}
+
+auto trim_string(std::string_view value) -> std::string_view {
+  constexpr size_t max_width = 180;
+  if (value.size() <= max_width) {
+    return value;
+  }
+  return value.substr(0, max_width);
+}
+
+void print_string_entry(char op, const string_diff::string_entry& entry) {
+  const auto suffix = entry.value.size() > trim_string(entry.value).size() ? "..." : "";
+  std::println("{} {:08x} {} {}{}", op, entry.address, entry.section, trim_string(entry.value), suffix);
+  if (!entry.xrefs.empty()) {
+    std::print("    xrefs:");
+    for (const auto xref : entry.xrefs) {
+      std::print(" {:08x}", xref);
+    }
+    std::println();
+  }
+}
+
+void format_string_results(const string_diff::result& result, const display_options& options) {
+  std::println("+ {} strings added", result.added.size());
+  std::println("- {} strings removed", result.removed.size());
+  std::println("primary strings: {}", result.primary_string_count);
+  std::println("secondary strings: {}", result.secondary_string_count);
+
+  if (!result.added.empty()) {
+    std::println("\n:: Added Strings");
+    const auto print_count = std::min(options.limit, result.added.size());
+    for (size_t i = 0; i < print_count; ++i) {
+      print_string_entry('+', result.added[i]);
+    }
+    print_limit_notice("added strings", print_count, result.added.size());
+  }
+
+  if (!result.removed.empty()) {
+    std::println("\n:: Removed Strings");
+    const auto print_count = std::min(options.limit, result.removed.size());
+    for (size_t i = 0; i < print_count; ++i) {
+      print_string_entry('-', result.removed[i]);
+    }
+    print_limit_notice("removed strings", print_count, result.removed.size());
   }
 }
 
@@ -275,6 +325,12 @@ int main(int argc, char* argv[]) {
   }
 
   try {
+    if (options->string_diff) {
+      auto result = string_diff::compare(options->primary_path, options->secondary_path, {});
+      format_string_results(result, options->display);
+      return 0;
+    }
+
     binary_differ::compare_options compare_options;
     compare_options.decode_instructions = options->decode_instructions;
     binary_differ differ(options->primary_path, options->secondary_path, compare_options);

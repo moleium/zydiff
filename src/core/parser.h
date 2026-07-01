@@ -23,6 +23,7 @@ class binary_parser {
 
   [[nodiscard]] const section* get_text_section() const;
   [[nodiscard]] const section* get_section(std::string_view name) const;
+  [[nodiscard]] const std::vector<section>& get_sections() const;
   [[nodiscard]] const std::vector<uint64_t>& get_function_starts() const;
   [[nodiscard]] uint64_t get_image_base() const;
 

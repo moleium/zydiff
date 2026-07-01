@@ -19,6 +19,7 @@ add_library(${PROJECT_NAME} STATIC
   src/core/parser.cpp
   src/core/analyzer.cpp
   src/core/differ.cpp
+  src/core/string_diff.cpp
   src/core/serializer.cpp
 )
 

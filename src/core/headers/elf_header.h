@@ -8,6 +8,7 @@ using elf64_word = uint32_t;
 using elf64_xword = uint64_t;
 
 constexpr int EI_NIDENT = 16;
+constexpr elf64_xword SHF_ALLOC = 0x2;
 constexpr elf64_xword SHF_EXECINSTR = 0x4;
 
 #pragma pack(push, 1)
