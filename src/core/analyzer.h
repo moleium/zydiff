@@ -7,6 +7,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <stop_token>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -40,6 +41,14 @@ class subroutine_analyzer {
     const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
     bool decode_instructions = true
   );
+  subroutine_analyzer(
+    const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
+    bool decode_instructions, size_t worker_count
+  );
+  subroutine_analyzer(
+    const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
+    bool decode_instructions, size_t worker_count, std::stop_token stop_token
+  );
 
   std::vector<subroutine> get_subroutines();
 
@@ -51,6 +60,7 @@ class subroutine_analyzer {
   subroutine analyze_range(uint64_t start_address, uint64_t end_address);
   void set_byte_fingerprint(subroutine& function);
   void set_instruction_fingerprint(subroutine& function);
+  void check_stop() const;
   std::vector<uint64_t> discover_subroutine_starts();
 
   bool is_jmp(const ZydisDecodedInstruction& instruction) const;
@@ -69,5 +79,8 @@ class subroutine_analyzer {
   uint64_t base_address_;
   std::vector<uint64_t> known_starts_;
   bool decode_instructions_{true};
+  size_t worker_count_{1};
+  std::stop_token stop_token_;
+  std::stop_token worker_token_;
   decoder decoder_;
 };

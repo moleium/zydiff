@@ -32,4 +32,3 @@ class decoder {
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
   } instruction_;
 };
-

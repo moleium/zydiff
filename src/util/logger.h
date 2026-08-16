@@ -7,6 +7,5 @@
 
 #define LOG(...) std::print(__VA_ARGS__)
 #else
-#define LOG(...) 
+#define LOG(...)
 #endif
-

@@ -1,8 +1,14 @@
 #include "analyzer.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <limits>
+#include <mutex>
 #include <stack>
+#include <stdexcept>
+#include <stop_token>
+#include <thread>
 #include <type_traits>
 #include <unordered_set>
 
@@ -110,9 +116,22 @@ subroutine_analyzer::subroutine_analyzer(const uint8_t* data, size_t size, uint6
 subroutine_analyzer::subroutine_analyzer(
   const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
   bool decode_instructions
+) : subroutine_analyzer(data, size, base_address, known_starts, decode_instructions, 1) {
+}
+
+subroutine_analyzer::subroutine_analyzer(
+  const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
+  bool decode_instructions, size_t worker_count
+) : subroutine_analyzer(data, size, base_address, known_starts, decode_instructions, worker_count, {}) {
+}
+
+subroutine_analyzer::subroutine_analyzer(
+  const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
+  bool decode_instructions, size_t worker_count, std::stop_token stop_token
 ) :
     data_(data), size_(size), base_address_(base_address), known_starts_(known_starts.begin(), known_starts.end()),
-    decode_instructions_(decode_instructions) {
+    decode_instructions_(decode_instructions), worker_count_(std::max(size_t{1}, worker_count)),
+    stop_token_(stop_token) {
   std::erase_if(known_starts_, [&](uint64_t address) {
     return address < base_address_ || address >= base_address_ + size_;
   });
@@ -121,21 +140,63 @@ subroutine_analyzer::subroutine_analyzer(
 }
 
 std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutines() {
+  check_stop();
   if (!known_starts_.empty()) {
-    std::vector<subroutine> functions;
-    functions.reserve(known_starts_.size());
-
-    for (size_t i = 0; i < known_starts_.size(); ++i) {
+    std::vector<subroutine> functions(known_starts_.size());
+    auto analyze = [&](subroutine_analyzer& analyzer, size_t i) {
       const auto end_address_hint =
         i + 1 < known_starts_.size() ? std::optional<uint64_t>(known_starts_[i + 1]) : std::nullopt;
-      auto function = decode_instructions_
-                        ? analyze_subroutine(known_starts_[i], end_address_hint)
-                        : analyze_range(known_starts_[i], end_address_hint.value_or(base_address_ + size_));
-      if (!function.basic_blocks.empty() || function.byte_size > 0) {
-        functions.push_back(std::move(function));
+      functions[i] = decode_instructions_
+                       ? analyzer.analyze_subroutine(known_starts_[i], end_address_hint)
+                       : analyzer.analyze_range(known_starts_[i], end_address_hint.value_or(base_address_ + size_));
+    };
+
+    const auto thread_count = std::min(worker_count_, known_starts_.size());
+    if (thread_count == 1) {
+      for (size_t i = 0; i < known_starts_.size(); ++i) {
+        check_stop();
+        analyze(*this, i);
       }
+    } else {
+      std::atomic_size_t next_index{0};
+      std::stop_source stop_source;
+      std::exception_ptr failure;
+      std::mutex failure_mutex;
+      std::vector<std::jthread> workers;
+      workers.reserve(thread_count);
+      for (size_t i = 0; i < thread_count; ++i) {
+        workers.emplace_back([&] {
+          try {
+            subroutine_analyzer analyzer(
+              data_, size_, base_address_, std::span<const uint64_t>{}, decode_instructions_, 1, stop_token_
+            );
+            analyzer.worker_token_ = stop_source.get_token();
+            while (!stop_source.stop_requested() && !stop_token_.stop_requested()) {
+              const auto index = next_index.fetch_add(1, std::memory_order_relaxed);
+              if (index >= known_starts_.size()) {
+                break;
+              }
+              analyze(analyzer, index);
+            }
+          } catch (...) {
+            stop_source.request_stop();
+            const std::scoped_lock lock(failure_mutex);
+            if (!failure) {
+              failure = std::current_exception();
+            }
+          }
+        });
+      }
+      workers.clear();
+      if (failure) {
+        std::rethrow_exception(failure);
+      }
+      check_stop();
     }
 
+    std::erase_if(functions, [](const auto& function) {
+      return function.basic_blocks.empty() && function.byte_size == 0;
+    });
     return functions;
   }
 
@@ -144,6 +205,7 @@ std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutine
   functions.reserve(function_starts.size());
 
   for (auto start_address : function_starts) {
+    check_stop();
     functions.push_back(analyze_subroutine(start_address, std::nullopt));
   }
 
@@ -164,6 +226,12 @@ std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutine
   return filtered_functions;
 }
 
+void subroutine_analyzer::check_stop() const {
+  if (stop_token_.stop_requested() || worker_token_.stop_requested()) {
+    throw std::runtime_error("analysis cancelled");
+  }
+}
+
 std::vector<uint64_t> subroutine_analyzer::discover_subroutine_starts() {
   std::unordered_set<uint64_t> function_starts;
   std::vector<uint64_t> work_queue;
@@ -175,10 +243,12 @@ std::vector<uint64_t> subroutine_analyzer::discover_subroutine_starts() {
 
   size_t work_idx = 0;
   while (work_idx < work_queue.size()) {
+    check_stop();
     uint64_t current_address = work_queue[work_idx++];
     size_t offset = current_address - base_address_;
 
     while (offset < size_) {
+      check_stop();
       if (!decoder_.disassemble(current_address, data_ + offset, size_ - offset)) {
         offset++;
         current_address++;
@@ -215,6 +285,9 @@ std::vector<uint64_t> subroutine_analyzer::discover_subroutine_starts() {
   }
 
   for (size_t offset = 0; offset < size_ - 15; offset++) {
+    if (offset % 4096 == 0) {
+      check_stop();
+    }
     uint64_t current_address = base_address_ + offset;
     if (function_starts.contains(current_address)) {
       continue;
@@ -319,6 +392,9 @@ void subroutine_analyzer::set_byte_fingerprint(subroutine& function) {
   const auto byte_count = static_cast<size_t>(end_address - function.start_address);
   uint64_t hash = 14695981039346656037ull;
   for (size_t i = 0; i < byte_count; ++i) {
+    if (i % 4096 == 0) {
+      check_stop();
+    }
     hash ^= data_[start_offset + i];
     hash *= 1099511628211ull;
   }
@@ -349,6 +425,7 @@ void subroutine_analyzer::set_instruction_fingerprint(subroutine& function) {
 
   // hash mnemonic operand kinds registers memory form and length
   while (offset < end_offset) {
+    check_stop();
     ZydisDecodedInstruction instruction{};
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT]{};
     if (!ZYAN_SUCCESS(
@@ -414,6 +491,7 @@ subroutine_analyzer::find_basic_blocks(uint64_t start_address, std::optional<uin
   address_stack.push(start_address);
 
   while (!address_stack.empty()) {
+    check_stop();
     auto current_address = address_stack.top();
     address_stack.pop();
 
@@ -430,6 +508,7 @@ subroutine_analyzer::find_basic_blocks(uint64_t start_address, std::optional<uin
     auto offset = current_address - base_address_;
 
     while (offset < size_ && current_address < function_end) {
+      check_stop();
       if (!decoder_.disassemble(current_address, data_ + offset, size_ - offset)) {
         break;
       }
@@ -537,10 +616,25 @@ std::optional<uint64_t> subroutine_analyzer::get_jump_target(
 
   if (operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
     if (operands[0].imm.is_relative) {
-      // relative jump, calculate absolute target
-      return current_address + instruction.length + operands[0].imm.value.s;
+      if (current_address > std::numeric_limits<uint64_t>::max() - instruction.length) {
+        return std::nullopt;
+      }
+      const auto next_address = current_address + instruction.length;
+      const auto displacement = operands[0].imm.value.s;
+      if (displacement >= 0) {
+        const auto offset = static_cast<uint64_t>(displacement);
+        if (next_address > std::numeric_limits<uint64_t>::max() - offset) {
+          return std::nullopt;
+        }
+        return next_address + offset;
+      }
+
+      const auto offset = static_cast<uint64_t>(-(displacement + 1)) + 1;
+      if (next_address < offset) {
+        return std::nullopt;
+      }
+      return next_address - offset;
     } else {
-      // absolute jump, use the immediate value directly
       return operands[0].imm.value.u;
     }
   }
@@ -553,37 +647,53 @@ subroutine_analyzer::levenshtein_distance(const std::vector<std::string>& seq1, 
   const size_t m = seq1.size();
   const size_t n = seq2.size();
 
-  const size_t INSERT_DELETE_COST = 100;
-  const size_t MISMATCH_COST = 100;
-  const size_t NORMALIZED_MATCH_COST = 10;
+  constexpr size_t insert_delete_cost = 100;
+  constexpr size_t mismatch_cost = 100;
+  constexpr size_t normalized_match_cost = 10;
 
-  std::vector<std::vector<size_t>> dp(m + 1, std::vector<size_t>(n + 1));
+  if (seq1 == seq2) {
+    return 0;
+  }
 
-  for (size_t i = 0; i <= m; i++)
-    dp[i][0] = i * INSERT_DELETE_COST;
-  for (size_t j = 0; j <= n; j++)
-    dp[0][j] = j * INSERT_DELETE_COST;
+  std::vector<std::string> normalized_first;
+  normalized_first.reserve(m);
+  for (const auto& instruction : seq1) {
+    normalized_first.push_back(normalize_instruction(instruction));
+  }
 
-  for (size_t i = 1; i <= m; i++) {
-    for (size_t j = 1; j <= n; j++) {
+  std::vector<std::string> normalized_second;
+  normalized_second.reserve(n);
+  for (const auto& instruction : seq2) {
+    normalized_second.push_back(normalize_instruction(instruction));
+  }
+
+  std::vector<size_t> previous(n + 1);
+  std::vector<size_t> current(n + 1);
+
+  for (size_t j = 0; j <= n; ++j) {
+    previous[j] = j * insert_delete_cost;
+  }
+
+  for (size_t i = 1; i <= m; ++i) {
+    current[0] = i * insert_delete_cost;
+    for (size_t j = 1; j <= n; ++j) {
       size_t substitution_cost;
       if (seq1[i - 1] == seq2[j - 1]) {
         substitution_cost = 0;
-      } else if (normalize_instruction(seq1[i - 1]) == normalize_instruction(seq2[j - 1])) {
-        substitution_cost = NORMALIZED_MATCH_COST;
+      } else if (normalized_first[i - 1] == normalized_second[j - 1]) {
+        substitution_cost = normalized_match_cost;
       } else {
-        substitution_cost = MISMATCH_COST;
+        substitution_cost = mismatch_cost;
       }
 
-      // clang-format off
-      dp[i][j] = std::min({
-        dp[i - 1][j] + INSERT_DELETE_COST,    // deletion
-        dp[i][j - 1] + INSERT_DELETE_COST,    // insertion
-        dp[i - 1][j - 1] + substitution_cost  // substitution
+      current[j] = std::min({
+        previous[j] + insert_delete_cost,
+        current[j - 1] + insert_delete_cost,
+        previous[j - 1] + substitution_cost,
       });
-      // clang-format on
     }
+    std::swap(previous, current);
   }
 
-  return dp[m][n];
+  return previous[n];
 }

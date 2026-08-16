@@ -206,8 +206,8 @@ auto diff_serializer::save(const binary_differ::diff_result& result, const std::
   bw.write(format_magic);
   bw.write(format_version);
 
-  bw.write(static_cast<uint32_t>(result.matched_subroutines.size()));
-  for (const auto& [p, s] : result.matched_subroutines) {
+  bw.write(static_cast<uint32_t>(result.matches.size()));
+  for (const auto& [p, s] : result.matches) {
     write_subroutine(bw, p);
     write_subroutine(bw, s);
   }
@@ -261,7 +261,7 @@ auto diff_serializer::load(const std::string& filepath) -> std::expected<binary_
     return std::unexpected("corrupt matches count");
   }
 
-  result.matched_subroutines.reserve(*match_count);
+  result.matches.reserve(*match_count);
   for (uint32_t i = 0; i < *match_count; ++i) {
     auto p = read_subroutine(br);
     if (!p)
@@ -271,7 +271,7 @@ auto diff_serializer::load(const std::string& filepath) -> std::expected<binary_
     if (!s)
       return std::unexpected(s.error());
 
-    result.matched_subroutines.emplace_back(std::move(*p), std::move(*s));
+    result.matches.emplace_back(std::move(*p), std::move(*s));
   }
 
   auto up_count = br.read<uint32_t>();

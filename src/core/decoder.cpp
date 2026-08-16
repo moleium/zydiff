@@ -33,8 +33,10 @@ auto decoder::disassemble(uint64_t address, const unsigned char* data, size_t si
     if (operand.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && operand.imm.is_relative) {
       ZydisCalcAbsoluteAddress(&instruction_.info, &operand, address_, &operand.imm.value.u);
       operand.imm.is_relative = false;
-    } else if (operand.type == ZYDIS_OPERAND_TYPE_MEMORY && operand.mem.base == ZYDIS_REGISTER_NONE &&
-               operand.mem.index == ZYDIS_REGISTER_NONE && operand.mem.disp.value != 0) {
+    } else if (
+      operand.type == ZYDIS_OPERAND_TYPE_MEMORY && operand.mem.base == ZYDIS_REGISTER_NONE &&
+      operand.mem.index == ZYDIS_REGISTER_NONE && operand.mem.disp.value != 0
+    ) {
       ZydisCalcAbsoluteAddress(
         &instruction_.info, &operand, address_, reinterpret_cast<uint64_t*>(&operand.mem.disp.value)
       );

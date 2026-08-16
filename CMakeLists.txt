@@ -12,6 +12,8 @@ if(NOT TARGET Zydis::Zydis)
     add_subdirectory(vendor/zydis)
 endif()
 
+find_package(Threads REQUIRED)
+
 add_subdirectory(example)
 
 add_library(${PROJECT_NAME} STATIC
@@ -19,7 +21,7 @@ add_library(${PROJECT_NAME} STATIC
   src/core/parser.cpp
   src/core/analyzer.cpp
   src/core/differ.cpp
-  src/core/string_diff.cpp
+  src/core/strings.cpp
   src/core/serializer.cpp
 )
 
@@ -29,6 +31,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 
 target_link_libraries(${PROJECT_NAME} PUBLIC
+  Threads::Threads
   Zydis::Zydis
 )
 

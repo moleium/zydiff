@@ -1,8 +1,8 @@
 #pragma once
 
-#include "differ.h"
 #include <expected>
 #include <string>
+#include "differ.h"
 
 class diff_serializer {
   public:
