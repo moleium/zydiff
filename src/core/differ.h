@@ -1,27 +1,45 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 #include "analyzer.h"
-#include "logger.h"
 #include "parser.h"
 
 class binary_differ {
   public:
+  enum class change_type : uint8_t {
+    unchanged,
+    values_changed,
+    flow_changed,
+    instructions_changed,
+  };
+
   struct compare_options {
     double match_threshold{0.7};
     double fallback_threshold{0.5};
     uint64_t address_radius{0x20000};
     size_t pair_limit{5'000'000};
+    size_t delta_limit{16};
     bool decode_instructions{true};
     size_t fallback_limit{4};
-    double quick_threshold{0.97};
-    bool generate_details{true};
+  };
+
+  struct matched_subroutine {
+    subroutine_analyzer::subroutine primary;
+    subroutine_analyzer::subroutine secondary;
+    change_type change{change_type::unchanged};
+    double similarity{};
+  };
+
+  struct block_match {
+    size_t primary_index{};
+    size_t secondary_index{};
   };
 
   struct diff_result {
-    std::vector<std::pair<subroutine_analyzer::subroutine, subroutine_analyzer::subroutine>> matches;
+    std::vector<matched_subroutine> matches;
     std::vector<subroutine_analyzer::subroutine> unmatched_primary;
     std::vector<subroutine_analyzer::subroutine> unmatched_secondary;
     size_t primary_count{0};
@@ -33,29 +51,22 @@ class binary_differ {
   binary_differ(const std::string& primary_path, const std::string& secondary_path, compare_options options);
 
   diff_result compare();
+  static std::vector<block_match>
+  match_blocks(const subroutine_analyzer::subroutine& primary, const subroutine_analyzer::subroutine& secondary);
 
   private:
-  struct subroutine_match {
+  struct match_index {
     size_t primary_index{};
     size_t secondary_index{};
     double similarity{};
-    std::vector<std::string> diff_details;
   };
 
-  double score_subroutines(
-    const subroutine_analyzer::subroutine& s1, const subroutine_analyzer::subroutine& s2,
-    std::vector<std::string>* diff_details = nullptr
-  );
+  double score_subroutines(const subroutine_analyzer::subroutine& s1, const subroutine_analyzer::subroutine& s2);
 
-  std::vector<subroutine_match> match_subroutines(
+  std::vector<match_index> match_subroutines(
     const std::vector<subroutine_analyzer::subroutine>& primary_subroutines,
     const std::vector<subroutine_analyzer::subroutine>& secondary_subroutines
   );
-
-  std::vector<std::pair<char, std::string>>
-  diff_instructions(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2);
-
-  std::vector<std::string> get_lcs(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2);
 
   std::unique_ptr<binary_parser> primary_;
   std::unique_ptr<binary_parser> secondary_;

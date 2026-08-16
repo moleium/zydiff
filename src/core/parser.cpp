@@ -7,6 +7,7 @@
 #include <vector>
 #include "headers/elf_header.h"
 #include "headers/pe_header.h"
+#include "util/logger.h"
 
 namespace {
 
@@ -244,11 +245,12 @@ void binary_parser::parse_pe(std::ifstream& file) {
     section sect;
     sect.name = std::string(s_header.name, strnlen(s_header.name, 8));
     sect.virtual_address = s_header.virtual_address;
-    sect.size = s_header.size_of_raw_data;
-    sect.file_offset = s_header.pointer_to_raw_data;
+    sect.mapped_size = std::max<uint64_t>(s_header.virtual_size, s_header.size_of_raw_data);
     sect.flags = 0;
 
-    LOG("Found section: %s, VA: 0x%x, Size: 0x%x\n", sect.name.c_str(), sect.virtual_address, sect.size);
+    LOG(
+      "Found section: %s, VA: 0x%x, Size: 0x%x\n", sect.name.c_str(), sect.virtual_address, s_header.size_of_raw_data
+    );
 
     std::streampos current_pos = file.tellg();
     file.seekg(s_header.pointer_to_raw_data);
@@ -275,14 +277,14 @@ void binary_parser::parse_elf(std::ifstream& file) {
   }
 
   elf64_shdr shstrtab_header;
-  file.seekg(elf_header.e_shoff + elf_header.e_shstrndx * elf_header.e_shentsize);
+  file.seekg(static_cast<std::streamoff>(elf_header.e_shoff + elf_header.e_shstrndx * elf_header.e_shentsize));
   file.read(reinterpret_cast<char*>(&shstrtab_header), sizeof(shstrtab_header));
 
   std::vector<char> string_table(shstrtab_header.sh_size);
-  file.seekg(shstrtab_header.sh_offset);
-  file.read(string_table.data(), shstrtab_header.sh_size);
+  file.seekg(static_cast<std::streamoff>(shstrtab_header.sh_offset));
+  file.read(string_table.data(), static_cast<std::streamsize>(shstrtab_header.sh_size));
 
-  file.seekg(elf_header.e_shoff);
+  file.seekg(static_cast<std::streamoff>(elf_header.e_shoff));
   for (int i = 0; i < elf_header.e_shnum; ++i) {
     elf64_shdr section_h;
     file.read(reinterpret_cast<char*>(&section_h), sizeof(section_h));
@@ -291,17 +293,16 @@ void binary_parser::parse_elf(std::ifstream& file) {
       section sect;
       sect.name = std::string(string_table.data() + section_h.sh_name);
       sect.virtual_address = section_h.sh_addr;
-      sect.size = section_h.sh_size;
-      sect.file_offset = section_h.sh_offset;
+      sect.mapped_size = section_h.sh_size;
       sect.flags = section_h.sh_flags;
 
-      LOG("Found section: %s, VA: 0x%llx, Size: 0x%llx\n", sect.name.c_str(), sect.virtual_address, sect.size);
+      LOG("Found section: %s, VA: 0x%llx, Size: 0x%llx\n", sect.name.c_str(), sect.virtual_address, section_h.sh_size);
 
       if (section_h.sh_size > 0 && section_h.sh_offset > 0) {
         std::streampos current_pos = file.tellg();
-        file.seekg(section_h.sh_offset);
+        file.seekg(static_cast<std::streamoff>(section_h.sh_offset));
         sect.data.resize(section_h.sh_size);
-        file.read(reinterpret_cast<char*>(sect.data.data()), section_h.sh_size);
+        file.read(reinterpret_cast<char*>(sect.data.data()), static_cast<std::streamsize>(section_h.sh_size));
         file.seekg(current_pos);
       }
 
@@ -374,7 +375,7 @@ void binary_parser::parse_elf_frame_header() {
   }
 
   const auto text_begin = text->virtual_address;
-  const auto text_end = text_begin + text->size;
+  const auto text_end = text_begin + text->data.size();
   function_starts_.clear();
   function_starts_.reserve(static_cast<size_t>(*fde_count));
 

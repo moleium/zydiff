@@ -1,13 +1,17 @@
 #include "serializer.hpp"
+#include <cmath>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <span>
+#include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace {
 
   constexpr uint32_t format_magic = 0x5a594446; // zydf
-  constexpr uint32_t format_version = 2;
+  constexpr uint32_t format_version = 5;
 
   class buffer_writer {
 public:
@@ -73,10 +77,20 @@ private:
     bw.write(bb.start_address);
     bw.write(bb.end_address);
 
-    bw.write(static_cast<uint32_t>(bb.successors.size()));
-    for (auto succ : bb.successors) {
-      bw.write(succ);
+    bw.write(static_cast<uint32_t>(bb.successor_keys.size()));
+    for (const auto key : bb.successor_keys) {
+      bw.write(key);
     }
+
+    bw.write(static_cast<uint32_t>(bb.instruction_keys.size()));
+    for (const auto key : bb.instruction_keys) {
+      bw.write(key);
+    }
+    bw.write(static_cast<uint32_t>(bb.match_keys.size()));
+    for (const auto key : bb.match_keys) {
+      bw.write(key);
+    }
+    bw.write(bb.match_hash);
 
     bw.write(static_cast<uint32_t>(bb.instructions.size()));
     for (const auto& instr : bb.instructions) {
@@ -89,19 +103,12 @@ private:
     bw.write(sub.end_address);
     bw.write(static_cast<uint64_t>(sub.fingerprint));
     bw.write(static_cast<uint64_t>(sub.byte_size));
-    bw.write(sub.byte_hash);
     bw.write(static_cast<uint64_t>(sub.instruction_count));
     bw.write(sub.instruction_hash);
-    bw.write(sub.similarity_score);
 
     bw.write(static_cast<uint32_t>(sub.basic_blocks.size()));
     for (const auto& bb : sub.basic_blocks) {
       write_basic_block(bw, bb);
-    }
-
-    bw.write(static_cast<uint32_t>(sub.diff_details.size()));
-    for (const auto& detail : sub.diff_details) {
-      bw.write_string(detail);
     }
   }
 
@@ -110,22 +117,55 @@ private:
 
     auto start = br.read<uint64_t>();
     auto end = br.read<uint64_t>();
-    auto succ_count = br.read<uint32_t>();
-    if (!start || !end || !succ_count) {
+    if (!start || !end) {
       return std::unexpected("corrupt basic_block header");
     }
 
     bb.start_address = *start;
     bb.end_address = *end;
 
-    bb.successors.reserve(*succ_count);
-    for (uint32_t i = 0; i < *succ_count; ++i) {
-      auto succ = br.read<uint64_t>();
-      if (!succ) {
-        return std::unexpected("corrupt basic_block successor");
-      }
-      bb.successors.push_back(*succ);
+    auto successor_count = br.read<uint32_t>();
+    if (!successor_count) {
+      return std::unexpected("corrupt basic_block successor keys");
     }
+    bb.successor_keys.reserve(*successor_count);
+    for (uint32_t i = 0; i < *successor_count; ++i) {
+      auto key = br.read<int64_t>();
+      if (!key) {
+        return std::unexpected("corrupt basic_block successor key");
+      }
+      bb.successor_keys.push_back(*key);
+    }
+
+    auto key_count = br.read<uint32_t>();
+    if (!key_count) {
+      return std::unexpected("corrupt basic_block instruction keys");
+    }
+    bb.instruction_keys.reserve(*key_count);
+    for (uint32_t i = 0; i < *key_count; ++i) {
+      auto key = br.read<uint64_t>();
+      if (!key) {
+        return std::unexpected("corrupt basic_block instruction key");
+      }
+      bb.instruction_keys.push_back(*key);
+    }
+    auto match_count = br.read<uint32_t>();
+    if (!match_count) {
+      return std::unexpected("corrupt basic_block match keys");
+    }
+    bb.match_keys.reserve(*match_count);
+    for (uint32_t i = 0; i < *match_count; ++i) {
+      auto key = br.read<uint64_t>();
+      if (!key) {
+        return std::unexpected("corrupt basic_block match key");
+      }
+      bb.match_keys.push_back(*key);
+    }
+    auto match_hash = br.read<uint64_t>();
+    if (!match_hash) {
+      return std::unexpected("corrupt basic_block match hash");
+    }
+    bb.match_hash = *match_hash;
 
     auto inst_count = br.read<uint32_t>();
     if (!inst_count) {
@@ -151,15 +191,11 @@ private:
     auto end = br.read<uint64_t>();
     auto fp = br.read<uint64_t>();
     auto byte_size = br.read<uint64_t>();
-    auto byte_hash = br.read<uint64_t>();
     auto instruction_count = br.read<uint64_t>();
     auto instruction_hash = br.read<uint64_t>();
-    auto sim = br.read<double>();
     auto bb_count = br.read<uint32_t>();
 
-    if (
-      !start || !end || !fp || !byte_size || !byte_hash || !instruction_count || !instruction_hash || !sim || !bb_count
-    ) {
+    if (!start || !end || !fp || !byte_size || !instruction_count || !instruction_hash || !bb_count) {
       return std::unexpected("corrupt subroutine header");
     }
 
@@ -167,10 +203,8 @@ private:
     sub.end_address = *end;
     sub.fingerprint = static_cast<fingerprint>(*fp);
     sub.byte_size = static_cast<size_t>(*byte_size);
-    sub.byte_hash = *byte_hash;
     sub.instruction_count = static_cast<size_t>(*instruction_count);
     sub.instruction_hash = *instruction_hash;
-    sub.similarity_score = *sim;
 
     sub.basic_blocks.reserve(*bb_count);
     for (uint32_t i = 0; i < *bb_count; ++i) {
@@ -179,20 +213,6 @@ private:
         return std::unexpected(bb.error());
       }
       sub.basic_blocks.push_back(std::move(*bb));
-    }
-
-    auto diff_count = br.read<uint32_t>();
-    if (!diff_count) {
-      return std::unexpected("corrupt subroutine diff details count");
-    }
-
-    sub.diff_details.reserve(*diff_count);
-    for (uint32_t i = 0; i < *diff_count; ++i) {
-      auto detail = br.read_string();
-      if (!detail) {
-        return std::unexpected("corrupt subroutine diff detail");
-      }
-      sub.diff_details.push_back(std::move(*detail));
     }
 
     return sub;
@@ -205,11 +225,16 @@ auto diff_serializer::save(const binary_differ::diff_result& result, const std::
 
   bw.write(format_magic);
   bw.write(format_version);
+  bw.write(static_cast<uint64_t>(result.primary_count));
+  bw.write(static_cast<uint64_t>(result.secondary_count));
+  bw.write(static_cast<uint64_t>(result.skipped_candidates));
 
   bw.write(static_cast<uint32_t>(result.matches.size()));
-  for (const auto& [p, s] : result.matches) {
-    write_subroutine(bw, p);
-    write_subroutine(bw, s);
+  for (const auto& match : result.matches) {
+    write_subroutine(bw, match.primary);
+    write_subroutine(bw, match.secondary);
+    bw.write(match.change);
+    bw.write(match.similarity);
   }
 
   bw.write(static_cast<uint32_t>(result.unmatched_primary.size()));
@@ -255,6 +280,15 @@ auto diff_serializer::load(const std::string& filepath) -> std::expected<binary_
   }
 
   binary_differ::diff_result result;
+  auto primary_count = br.read<uint64_t>();
+  auto secondary_count = br.read<uint64_t>();
+  auto skipped_candidates = br.read<uint64_t>();
+  if (!primary_count || !secondary_count || !skipped_candidates) {
+    return std::unexpected("corrupt result counts");
+  }
+  result.primary_count = static_cast<size_t>(*primary_count);
+  result.secondary_count = static_cast<size_t>(*secondary_count);
+  result.skipped_candidates = static_cast<size_t>(*skipped_candidates);
 
   auto match_count = br.read<uint32_t>();
   if (!match_count) {
@@ -271,7 +305,23 @@ auto diff_serializer::load(const std::string& filepath) -> std::expected<binary_
     if (!s)
       return std::unexpected(s.error());
 
-    result.matches.emplace_back(std::move(*p), std::move(*s));
+    auto change = br.read<binary_differ::change_type>();
+    auto similarity = br.read<double>();
+    if (!change || !similarity) {
+      return std::unexpected("corrupt match metadata");
+    }
+    if (
+      *change > binary_differ::change_type::instructions_changed || !std::isfinite(*similarity) || *similarity < 0.0 ||
+      *similarity > 1.0
+    ) {
+      return std::unexpected("invalid match metadata");
+    }
+    result.matches.push_back({
+      .primary = std::move(*p),
+      .secondary = std::move(*s),
+      .change = *change,
+      .similarity = *similarity,
+    });
   }
 
   auto up_count = br.read<uint32_t>();

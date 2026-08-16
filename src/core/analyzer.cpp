@@ -1,7 +1,6 @@
 #include "analyzer.h"
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -10,45 +9,28 @@
 #include <stop_token>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace {
 
-  [[nodiscard]] auto normalize_instruction(std::string_view instruction) -> std::string {
-    std::string result;
-    result.reserve(instruction.size());
-
-    for (size_t i = 0; i < instruction.size(); ++i) {
-      if (instruction.substr(i).starts_with("0x")) {
-        result += "0x?";
-        i += 2;
-        while (i < instruction.size() && std::isxdigit(static_cast<unsigned char>(instruction[i]))) {
-          ++i;
-        }
-        --i;
-      } else {
-        result += instruction[i];
-      }
-    }
-    return result;
-  }
-
   [[nodiscard]] auto calculate_fingerprint(std::span<const subroutine_analyzer::basic_block> blocks) -> fingerprint {
     uint64_t hash = 14695981039346656037ull;
-    auto append = [&](std::string_view value) {
-      for (const auto ch : value) {
-        hash ^= static_cast<uint8_t>(ch);
+    auto append = [&](uint64_t value) {
+      for (size_t i = 0; i < sizeof(value); ++i) {
+        hash ^= static_cast<uint8_t>((value >> (i * 8)) & 0xff);
         hash *= 1099511628211ull;
       }
     };
 
     for (const auto& block : blocks) {
-      hash ^= block.instructions.size();
+      hash ^= block.instruction_keys.size();
       hash *= 1099511628211ull;
-      hash ^= block.successors.size();
+      hash ^= block.successor_keys.size();
       hash *= 1099511628211ull;
-      for (const auto& instruction : block.instructions) {
-        append(normalize_instruction(instruction));
+      append(block.match_hash);
+      for (const auto successor : block.successor_keys) {
+        append(static_cast<uint64_t>(successor));
       }
     }
 
@@ -66,45 +48,108 @@ namespace {
     }
   }
 
-  void hash_value(uint64_t& hash, bool value) {
-    hash_value(hash, static_cast<uint8_t>(value ? 1 : 0));
-  }
-
   template <typename value_type>
     requires std::is_enum_v<value_type>
   void hash_value(uint64_t& hash, value_type value) {
     hash_value(hash, static_cast<std::underlying_type_t<value_type>>(value));
   }
 
-  [[nodiscard]] auto is_relative_control_flow_mnemonic(ZydisMnemonic mnemonic) -> bool {
-    switch (mnemonic) {
-      case ZYDIS_MNEMONIC_CALL:
-      case ZYDIS_MNEMONIC_JMP:
-      case ZYDIS_MNEMONIC_JB:
-      case ZYDIS_MNEMONIC_JBE:
-      case ZYDIS_MNEMONIC_JCXZ:
-      case ZYDIS_MNEMONIC_JECXZ:
-      case ZYDIS_MNEMONIC_JKNZD:
-      case ZYDIS_MNEMONIC_JKZD:
-      case ZYDIS_MNEMONIC_JL:
-      case ZYDIS_MNEMONIC_JLE:
-      case ZYDIS_MNEMONIC_JNB:
-      case ZYDIS_MNEMONIC_JNBE:
-      case ZYDIS_MNEMONIC_JNL:
-      case ZYDIS_MNEMONIC_JNLE:
-      case ZYDIS_MNEMONIC_JNO:
-      case ZYDIS_MNEMONIC_JNP:
-      case ZYDIS_MNEMONIC_JNS:
-      case ZYDIS_MNEMONIC_JNZ:
-      case ZYDIS_MNEMONIC_JO:
-      case ZYDIS_MNEMONIC_JP:
-      case ZYDIS_MNEMONIC_JRCXZ:
-      case ZYDIS_MNEMONIC_JS:
-      case ZYDIS_MNEMONIC_JZ:
-        return true;
-      default:
-        return false;
+  uint64_t calculate_instruction_hash(std::span<const subroutine_analyzer::basic_block> blocks) {
+    uint64_t hash = 14695981039346656037ull;
+    for (const auto& block : blocks) {
+      hash_value(hash, block.instruction_keys.size());
+      hash_value(hash, block.successor_keys.size());
+      for (const auto key : block.instruction_keys) {
+        hash_value(hash, key);
+      }
+      for (const auto successor : block.successor_keys) {
+        hash_value(hash, successor);
+      }
     }
+    return hash;
+  }
+
+  bool is_call(const ZydisDecodedInstruction& instruction) {
+    return instruction.meta.category == ZYDIS_CATEGORY_CALL;
+  }
+
+  bool is_return(const ZydisDecodedInstruction& instruction) {
+    return instruction.meta.category == ZYDIS_CATEGORY_RET;
+  }
+
+  bool is_control_flow(const ZydisDecodedInstruction& instruction) {
+    return is_call(instruction) || is_return(instruction) || instruction.meta.category == ZYDIS_CATEGORY_COND_BR ||
+           instruction.meta.category == ZYDIS_CATEGORY_UNCOND_BR;
+  }
+
+  bool is_image_address(uint64_t value, std::span<const subroutine_analyzer::address_range> ranges) {
+    return std::ranges::any_of(ranges, [value](const auto& range) {
+      return value >= range.start && value < range.end;
+    });
+  }
+
+  uint64_t instruction_key(
+    const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands, bool include_values,
+    std::span<const subroutine_analyzer::address_range> ranges
+  ) {
+    uint64_t hash = 14695981039346656037ull;
+    hash_value(hash, instruction.mnemonic);
+    hash_value(hash, instruction.operand_count_visible);
+    hash_value(hash, instruction.attributes);
+    hash_value(hash, instruction.avx.mask.mode);
+    hash_value(hash, instruction.avx.mask.reg);
+    hash_value(hash, instruction.avx.broadcast.mode);
+    hash_value(hash, instruction.avx.broadcast.is_static);
+    hash_value(hash, instruction.avx.rounding.mode);
+    hash_value(hash, instruction.avx.swizzle.mode);
+    hash_value(hash, instruction.avx.conversion.mode);
+    hash_value(hash, instruction.avx.has_sae);
+    hash_value(hash, instruction.avx.has_eviction_hint);
+
+    for (uint8_t i = 0; i < instruction.operand_count; ++i) {
+      const auto& operand = operands[i];
+      if (operand.visibility == ZYDIS_OPERAND_VISIBILITY_HIDDEN) {
+        continue;
+      }
+
+      hash_value(hash, operand.type);
+      hash_value(hash, operand.size);
+      switch (operand.type) {
+        case ZYDIS_OPERAND_TYPE_REGISTER:
+          hash_value(hash, operand.reg.value);
+          break;
+        case ZYDIS_OPERAND_TYPE_MEMORY: {
+          hash_value(hash, operand.mem.type);
+          hash_value(hash, operand.mem.segment);
+          hash_value(hash, operand.mem.base);
+          hash_value(hash, operand.mem.index);
+          hash_value(hash, operand.mem.scale);
+          const auto address_operand =
+            operand.mem.base == ZYDIS_REGISTER_RIP || operand.mem.base == ZYDIS_REGISTER_EIP ||
+            (operand.mem.base == ZYDIS_REGISTER_NONE && operand.mem.index == ZYDIS_REGISTER_NONE &&
+             is_image_address(static_cast<uint64_t>(operand.mem.disp.value), ranges));
+          if (include_values && !address_operand) {
+            hash_value(hash, operand.mem.disp.value);
+          }
+          break;
+        }
+        case ZYDIS_OPERAND_TYPE_POINTER:
+          hash_value(hash, operand.ptr.segment);
+          if (include_values && !is_image_address(operand.ptr.offset, ranges)) {
+            hash_value(hash, operand.ptr.offset);
+          }
+          break;
+        case ZYDIS_OPERAND_TYPE_IMMEDIATE:
+          hash_value(hash, operand.imm.is_signed);
+          if (include_values && !operand.imm.is_relative && !is_image_address(operand.imm.value.u, ranges)) {
+            hash_value(hash, operand.imm.value.u);
+          }
+          break;
+        default:
+          break;
+      }
+    }
+    return hash;
   }
 
 } // namespace
@@ -128,10 +173,17 @@ subroutine_analyzer::subroutine_analyzer(
 subroutine_analyzer::subroutine_analyzer(
   const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
   bool decode_instructions, size_t worker_count, std::stop_token stop_token
+) : subroutine_analyzer(data, size, base_address, known_starts, decode_instructions, worker_count, stop_token, {}) {
+}
+
+subroutine_analyzer::subroutine_analyzer(
+  const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
+  bool decode_instructions, size_t worker_count, std::stop_token stop_token,
+  std::span<const address_range> address_ranges
 ) :
     data_(data), size_(size), base_address_(base_address), known_starts_(known_starts.begin(), known_starts.end()),
-    decode_instructions_(decode_instructions), worker_count_(std::max(size_t{1}, worker_count)),
-    stop_token_(stop_token) {
+    address_ranges_(address_ranges.begin(), address_ranges.end()), decode_instructions_(decode_instructions),
+    worker_count_(std::max(size_t{1}, worker_count)), stop_token_(stop_token) {
   std::erase_if(known_starts_, [&](uint64_t address) {
     return address < base_address_ || address >= base_address_ + size_;
   });
@@ -146,9 +198,7 @@ std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutine
     auto analyze = [&](subroutine_analyzer& analyzer, size_t i) {
       const auto end_address_hint =
         i + 1 < known_starts_.size() ? std::optional<uint64_t>(known_starts_[i + 1]) : std::nullopt;
-      functions[i] = decode_instructions_
-                       ? analyzer.analyze_subroutine(known_starts_[i], end_address_hint)
-                       : analyzer.analyze_range(known_starts_[i], end_address_hint.value_or(base_address_ + size_));
+      functions[i] = analyzer.analyze_subroutine(known_starts_[i], end_address_hint);
     };
 
     const auto thread_count = std::min(worker_count_, known_starts_.size());
@@ -168,7 +218,8 @@ std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutine
         workers.emplace_back([&] {
           try {
             subroutine_analyzer analyzer(
-              data_, size_, base_address_, std::span<const uint64_t>{}, decode_instructions_, 1, stop_token_
+              data_, size_, base_address_, std::span<const uint64_t>{}, decode_instructions_, 1, stop_token_,
+              address_ranges_
             );
             analyzer.worker_token_ = stop_source.get_token();
             while (!stop_source.stop_requested() && !stop_token_.stop_requested()) {
@@ -345,39 +396,22 @@ subroutine_analyzer::analyze_subroutine(uint64_t start_address, std::optional<ui
   function.start_address = start_address;
   function.basic_blocks = find_basic_blocks(start_address, end_address_hint);
 
-  std::ranges::sort(function.basic_blocks, [](const auto& lhs, const auto& rhs) {
-    return lhs.start_address < rhs.start_address;
-  });
-
   function.fingerprint = calculate_fingerprint(function.basic_blocks);
+  function.instruction_hash = calculate_instruction_hash(function.basic_blocks);
+  for (const auto& block : function.basic_blocks) {
+    function.instruction_count += block.instruction_keys.size();
+  }
 
   function.end_address = start_address;
   for (const auto& block : function.basic_blocks) {
     function.end_address = std::max(function.end_address, block.end_address);
   }
-  set_byte_fingerprint(function);
-  set_instruction_fingerprint(function);
+  set_byte_size(function);
 
   return function;
 }
 
-subroutine_analyzer::subroutine subroutine_analyzer::analyze_range(uint64_t start_address, uint64_t end_address) {
-  subroutine function;
-  function.start_address = start_address;
-  function.end_address = std::min(end_address, base_address_ + size_);
-
-  if (function.start_address >= function.end_address) {
-    return function;
-  }
-
-  set_byte_fingerprint(function);
-  set_instruction_fingerprint(function);
-  function.fingerprint =
-    static_cast<fingerprint>(function.instruction_hash != 0 ? function.instruction_hash : function.byte_hash);
-  return function;
-}
-
-void subroutine_analyzer::set_byte_fingerprint(subroutine& function) {
+void subroutine_analyzer::set_byte_size(subroutine& function) {
   if (function.start_address < base_address_ || function.end_address <= function.start_address) {
     return;
   }
@@ -388,101 +422,16 @@ void subroutine_analyzer::set_byte_fingerprint(subroutine& function) {
     return;
   }
 
-  const auto start_offset = function.start_address - base_address_;
   const auto byte_count = static_cast<size_t>(end_address - function.start_address);
-  uint64_t hash = 14695981039346656037ull;
-  for (size_t i = 0; i < byte_count; ++i) {
-    if (i % 4096 == 0) {
-      check_stop();
-    }
-    hash ^= data_[start_offset + i];
-    hash *= 1099511628211ull;
-  }
 
   function.end_address = end_address;
   function.byte_size = byte_count;
-  function.byte_hash = hash;
-}
-
-void subroutine_analyzer::set_instruction_fingerprint(subroutine& function) {
-  if (function.start_address < base_address_ || function.end_address <= function.start_address) {
-    return;
-  }
-
-  const auto section_end = base_address_ + size_;
-  const auto end_address = std::min(function.end_address, section_end);
-  if (end_address <= function.start_address) {
-    return;
-  }
-
-  ZydisDecoder local_decoder;
-  ZydisDecoderInit(&local_decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
-
-  auto offset = function.start_address - base_address_;
-  const auto end_offset = end_address - base_address_;
-  uint64_t hash = 14695981039346656037ull;
-  size_t instruction_count = 0;
-
-  // hash mnemonic operand kinds registers memory form and length
-  while (offset < end_offset) {
-    check_stop();
-    ZydisDecodedInstruction instruction{};
-    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT]{};
-    if (!ZYAN_SUCCESS(
-          ZydisDecoderDecodeFull(&local_decoder, data_ + offset, end_offset - offset, &instruction, operands)
-        )) {
-      hash_value(hash, data_[offset]);
-      ++offset;
-      continue;
-    }
-
-    hash_value(hash, instruction.mnemonic);
-    hash_value(hash, instruction.operand_count_visible);
-    hash_value(hash, instruction.length);
-    const auto normalize_control_flow = is_relative_control_flow_mnemonic(instruction.mnemonic);
-
-    for (uint8_t i = 0; i < instruction.operand_count; ++i) {
-      const auto& operand = operands[i];
-      if (operand.visibility == ZYDIS_OPERAND_VISIBILITY_HIDDEN) {
-        continue;
-      }
-
-      hash_value(hash, operand.type);
-      hash_value(hash, operand.size);
-      switch (operand.type) {
-        case ZYDIS_OPERAND_TYPE_REGISTER:
-          hash_value(hash, operand.reg.value);
-          break;
-        case ZYDIS_OPERAND_TYPE_MEMORY:
-          hash_value(hash, operand.mem.type);
-          hash_value(hash, operand.mem.base);
-          hash_value(hash, operand.mem.index);
-          hash_value(hash, operand.mem.scale);
-          break;
-        case ZYDIS_OPERAND_TYPE_POINTER:
-          hash_value(hash, operand.ptr.segment);
-          break;
-        case ZYDIS_OPERAND_TYPE_IMMEDIATE:
-          hash_value(hash, operand.imm.is_signed);
-          // hash immediate signedness and relative flag only
-          hash_value(hash, operand.imm.is_relative || normalize_control_flow);
-          break;
-        default:
-          break;
-      }
-    }
-
-    ++instruction_count;
-    offset += instruction.length;
-  }
-
-  function.instruction_count = instruction_count;
-  function.instruction_hash = hash;
 }
 
 std::vector<subroutine_analyzer::basic_block>
 subroutine_analyzer::find_basic_blocks(uint64_t start_address, std::optional<uint64_t> end_address_hint) {
   std::vector<basic_block> blocks;
+  std::unordered_map<uint64_t, std::vector<uint64_t>> block_successors;
   std::unordered_set<uint64_t> processed_addresses;
   const auto section_end = base_address_ + size_;
   const auto function_end = std::min(end_address_hint.value_or(section_end), section_end);
@@ -498,12 +447,13 @@ subroutine_analyzer::find_basic_blocks(uint64_t start_address, std::optional<uin
     if (processed_addresses.contains(current_address)) {
       continue;
     }
-    if (current_address < base_address_ || current_address >= function_end) {
+    if (current_address < start_address || current_address >= function_end) {
       continue;
     }
 
     basic_block block;
     block.start_address = current_address;
+    std::vector<uint64_t> successors;
 
     auto offset = current_address - base_address_;
 
@@ -513,14 +463,22 @@ subroutine_analyzer::find_basic_blocks(uint64_t start_address, std::optional<uin
         break;
       }
 
-      auto instruction = decoder_.get_instruction();
-      auto decoded_instruction = decoder_.get_decoded_instruction();
-      auto decoded_operands = decoder_.get_decoded_operands();
+      const auto& decoded_instruction = decoder_.get_decoded_instruction();
+      const auto* decoded_operands = decoder_.get_decoded_operands();
 
-      block.instructions.push_back(instruction);
+      if (decode_instructions_) {
+        block.instructions.push_back(decoder_.get_instruction());
+      }
+      const auto key = instruction_key(decoded_instruction, decoded_operands, true, address_ranges_);
+      const auto match_key = instruction_key(decoded_instruction, decoded_operands, false, address_ranges_);
+      block.instruction_keys.push_back(key);
+      block.match_keys.push_back(match_key);
+      hash_value(block.match_hash, match_key);
 
       if (is_control_flow(decoded_instruction)) {
         if (is_return(decoded_instruction)) {
+          current_address += decoded_instruction.length;
+          offset += decoded_instruction.length;
           break;
         }
 
@@ -528,15 +486,17 @@ subroutine_analyzer::find_basic_blocks(uint64_t start_address, std::optional<uin
         if (is_call(decoded_instruction)) {
           auto next_address = current_address + decoded_instruction.length;
           if (next_address < function_end) {
-            block.successors.push_back(next_address);
+            successors.push_back(next_address);
             address_stack.push(next_address);
           }
+          current_address = next_address;
+          offset += decoded_instruction.length;
           break;
         }
 
         if (auto target = get_jump_target(decoded_instruction, decoded_operands, current_address)) {
-          if (*target >= base_address_ && *target < function_end) {
-            block.successors.push_back(*target);
+          if (*target >= start_address && *target < function_end) {
+            successors.push_back(*target);
             address_stack.push(*target);
           }
         }
@@ -546,11 +506,13 @@ subroutine_analyzer::find_basic_blocks(uint64_t start_address, std::optional<uin
         if (decoded_instruction.mnemonic != ZYDIS_MNEMONIC_JMP) {
           auto next_address = current_address + decoded_instruction.length;
           if (next_address < function_end) {
-            block.successors.push_back(next_address);
+            successors.push_back(next_address);
             address_stack.push(next_address);
           }
         }
 
+        current_address += decoded_instruction.length;
+        offset += decoded_instruction.length;
         break;
       }
 
@@ -559,55 +521,30 @@ subroutine_analyzer::find_basic_blocks(uint64_t start_address, std::optional<uin
     }
 
     block.end_address = current_address;
+    block_successors.emplace(block.start_address, std::move(successors));
     blocks.push_back(block);
     processed_addresses.insert(block.start_address);
   }
 
-  return blocks;
-}
+  std::ranges::sort(blocks, [](const auto& lhs, const auto& rhs) {
+    return lhs.start_address < rhs.start_address;
+  });
 
-bool subroutine_analyzer::is_jmp(const ZydisDecodedInstruction& instruction) const {
-  return ZYDIS_MNEMONIC_JB <= instruction.mnemonic && instruction.mnemonic <= ZYDIS_MNEMONIC_JZ;
-}
-
-bool subroutine_analyzer::is_call(const ZydisDecodedInstruction& instruction) const {
-  return instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
-}
-
-bool subroutine_analyzer::is_return(const ZydisDecodedInstruction& instruction) const {
-  return instruction.mnemonic == ZYDIS_MNEMONIC_RET;
-}
-
-bool subroutine_analyzer::is_control_flow(const ZydisDecodedInstruction& instruction) {
-  switch (instruction.mnemonic) {
-    case ZYDIS_MNEMONIC_JMP:
-    case ZYDIS_MNEMONIC_JB:
-    case ZYDIS_MNEMONIC_JBE:
-    case ZYDIS_MNEMONIC_JCXZ:
-    case ZYDIS_MNEMONIC_JECXZ:
-    case ZYDIS_MNEMONIC_JKNZD:
-    case ZYDIS_MNEMONIC_JKZD:
-    case ZYDIS_MNEMONIC_JL:
-    case ZYDIS_MNEMONIC_JLE:
-    case ZYDIS_MNEMONIC_JNB:
-    case ZYDIS_MNEMONIC_JNBE:
-    case ZYDIS_MNEMONIC_JNL:
-    case ZYDIS_MNEMONIC_JNLE:
-    case ZYDIS_MNEMONIC_JNO:
-    case ZYDIS_MNEMONIC_JNP:
-    case ZYDIS_MNEMONIC_JNS:
-    case ZYDIS_MNEMONIC_JNZ:
-    case ZYDIS_MNEMONIC_JO:
-    case ZYDIS_MNEMONIC_JP:
-    case ZYDIS_MNEMONIC_JRCXZ:
-    case ZYDIS_MNEMONIC_JS:
-    case ZYDIS_MNEMONIC_JZ:
-    case ZYDIS_MNEMONIC_RET:
-    case ZYDIS_MNEMONIC_CALL:
-      return true;
-    default:
-      return false;
+  std::unordered_map<uint64_t, size_t> block_indices;
+  block_indices.reserve(blocks.size());
+  for (size_t i = 0; i < blocks.size(); ++i) {
+    block_indices.emplace(blocks[i].start_address, i);
   }
+  for (size_t i = 0; i < blocks.size(); ++i) {
+    const auto& successors = block_successors.at(blocks[i].start_address);
+    blocks[i].successor_keys.reserve(successors.size());
+    for (const auto successor : successors) {
+      if (const auto it = block_indices.find(successor); it != block_indices.end()) {
+        blocks[i].successor_keys.push_back(static_cast<int64_t>(it->second) - static_cast<int64_t>(i));
+      }
+    }
+  }
+  return blocks;
 }
 
 std::optional<uint64_t> subroutine_analyzer::get_jump_target(
@@ -643,53 +580,29 @@ std::optional<uint64_t> subroutine_analyzer::get_jump_target(
 }
 
 std::size_t
-subroutine_analyzer::levenshtein_distance(const std::vector<std::string>& seq1, const std::vector<std::string>& seq2) {
+subroutine_analyzer::levenshtein_distance(const std::vector<uint64_t>& seq1, const std::vector<uint64_t>& seq2) {
   const size_t m = seq1.size();
   const size_t n = seq2.size();
-
-  constexpr size_t insert_delete_cost = 100;
-  constexpr size_t mismatch_cost = 100;
-  constexpr size_t normalized_match_cost = 10;
+  constexpr size_t edit_cost = 100;
 
   if (seq1 == seq2) {
     return 0;
   }
 
-  std::vector<std::string> normalized_first;
-  normalized_first.reserve(m);
-  for (const auto& instruction : seq1) {
-    normalized_first.push_back(normalize_instruction(instruction));
-  }
-
-  std::vector<std::string> normalized_second;
-  normalized_second.reserve(n);
-  for (const auto& instruction : seq2) {
-    normalized_second.push_back(normalize_instruction(instruction));
-  }
-
   std::vector<size_t> previous(n + 1);
   std::vector<size_t> current(n + 1);
-
   for (size_t j = 0; j <= n; ++j) {
-    previous[j] = j * insert_delete_cost;
+    previous[j] = j * edit_cost;
   }
 
   for (size_t i = 1; i <= m; ++i) {
-    current[0] = i * insert_delete_cost;
+    current[0] = i * edit_cost;
     for (size_t j = 1; j <= n; ++j) {
-      size_t substitution_cost;
-      if (seq1[i - 1] == seq2[j - 1]) {
-        substitution_cost = 0;
-      } else if (normalized_first[i - 1] == normalized_second[j - 1]) {
-        substitution_cost = normalized_match_cost;
-      } else {
-        substitution_cost = mismatch_cost;
-      }
-
+      const auto substitution = seq1[i - 1] == seq2[j - 1] ? 0 : edit_cost;
       current[j] = std::min({
-        previous[j] + insert_delete_cost,
-        current[j - 1] + insert_delete_cost,
-        previous[j - 1] + substitution_cost,
+        previous[j] + edit_cost,
+        current[j - 1] + edit_cost,
+        previous[j - 1] + substitution,
       });
     }
     std::swap(previous, current);

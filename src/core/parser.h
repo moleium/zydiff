@@ -2,19 +2,16 @@
 
 #include <cstdint>
 #include <fstream>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
-#include "logger.h"
 
 class binary_parser {
   public:
   struct section {
     std::string name;
     uint64_t virtual_address;
-    uint64_t size;
-    uint64_t file_offset;
+    uint64_t mapped_size;
     uint64_t flags;
     std::vector<uint8_t> data;
   };

@@ -1,6 +1,5 @@
 #include "core/strings.h"
 #include <algorithm>
-#include <cctype>
 #include <cstring>
 #include <optional>
 #include <string_view>
@@ -71,6 +70,7 @@ namespace {
             .address = section.virtual_address + start,
             .section = section.name,
             .value = std::string(reinterpret_cast<const char*>(section.data.data() + start), end - start),
+            .xrefs = {},
           });
         }
 
