@@ -9,11 +9,6 @@
 #include "core/differ.h"
 #include "core/strings.h"
 
-struct diff_line {
-  char op;
-  std::string text;
-};
-
 struct display_options {
   bool summary_only{false};
   bool show_unchanged{false};
@@ -22,47 +17,11 @@ struct display_options {
 
 struct cli_options {
   display_options display;
-  bool decode_instructions{true};
+  bool include_instructions{true};
   bool strings{false};
   std::string primary_path;
   std::string secondary_path;
 };
-
-std::vector<diff_line>
-generate_diff(const std::vector<std::string>& primary, const std::vector<std::string>& secondary) {
-  const size_t m = primary.size();
-  const size_t n = secondary.size();
-  std::vector<std::vector<size_t>> lcs_table(m + 1, std::vector<size_t>(n + 1, 0));
-
-  for (size_t i = 1; i <= m; ++i) {
-    for (size_t j = 1; j <= n; ++j) {
-      if (primary[i - 1] == secondary[j - 1]) {
-        lcs_table[i][j] = lcs_table[i - 1][j - 1] + 1;
-      } else {
-        lcs_table[i][j] = std::max(lcs_table[i - 1][j], lcs_table[i][j - 1]);
-      }
-    }
-  }
-
-  std::vector<diff_line> diff;
-  size_t i = m, j = n;
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && primary[i - 1] == secondary[j - 1]) {
-      diff.push_back({' ', primary[i - 1]});
-      --i;
-      --j;
-    } else if (j > 0 && (i == 0 || lcs_table[i][j - 1] >= lcs_table[i - 1][j])) {
-      diff.push_back({'+', secondary[j - 1]});
-      --j;
-    } else if (i > 0 && (j == 0 || lcs_table[i - 1][j] > lcs_table[i][j - 1])) {
-      diff.push_back({'-', primary[i - 1]});
-      --i;
-    }
-  }
-
-  std::reverse(diff.begin(), diff.end());
-  return diff;
-}
 
 void print_usage(std::string_view executable) {
   std::println(
@@ -81,11 +40,11 @@ auto parse_args(int argc, char* argv[]) -> std::optional<cli_options> {
     const std::string_view arg(argv[i]);
     if (arg == "--summary") {
       options.display.summary_only = true;
-      options.decode_instructions = false;
+      options.include_instructions = false;
     } else if (arg == "--strings") {
       options.strings = true;
     } else if (arg == "--no-instructions") {
-      options.decode_instructions = false;
+      options.include_instructions = false;
     } else if (arg == "--show-unchanged") {
       options.display.show_unchanged = true;
     } else if (arg == "--limit") {
@@ -287,45 +246,28 @@ void print_results(const binary_differ::diff_result& result, const display_optio
       );
       ++printed;
 
-      const auto block_matches = binary_differ::match_blocks(primary, secondary);
-      std::vector<bool> matched_primary(primary.basic_blocks.size());
-      std::vector<bool> matched_secondary(secondary.basic_blocks.size());
-      for (const auto& block_match : block_matches) {
-        matched_primary[block_match.primary_index] = true;
-        matched_secondary[block_match.secondary_index] = true;
-        const auto& p_block = primary.basic_blocks[block_match.primary_index];
-        const auto& s_block = secondary.basic_blocks[block_match.secondary_index];
-        auto diff = generate_diff(p_block.instructions, s_block.instructions);
-
-        for (const auto& line : diff) {
-          switch (line.op) {
-            case ' ':
-              std::println("    {} {}", line.op, line.text);
+      const auto block_diffs = binary_differ::diff_blocks(match);
+      if (!block_diffs) {
+        std::println("    instruction details unavailable");
+        continue;
+      }
+      for (const auto& block : *block_diffs) {
+        for (const auto& instruction : block.instructions) {
+          switch (instruction.type) {
+            case binary_differ::edit_type::unchanged:
+              std::println("      {}", *instruction.primary);
               break;
-            case '+':
-              std::println("  {}{}{} {}{}", green, line.op, reset, green, line.text, reset);
+            case binary_differ::edit_type::changed:
+              std::println("  {}-{} {}{}", red, reset, red, *instruction.primary, reset);
+              std::println("  {}+{} {}{}", green, reset, green, *instruction.secondary, reset);
               break;
-            case '-':
-              std::println("  {}{}{} {}{}", red, line.op, reset, red, line.text, reset);
+            case binary_differ::edit_type::added:
+              std::println("  {}+{} {}{}", green, reset, green, *instruction.secondary, reset);
+              break;
+            case binary_differ::edit_type::removed:
+              std::println("  {}-{} {}{}", red, reset, red, *instruction.primary, reset);
               break;
           }
-        }
-      }
-
-      for (size_t i = 0; i < primary.basic_blocks.size(); ++i) {
-        if (matched_primary[i]) {
-          continue;
-        }
-        for (const auto& instr : primary.basic_blocks[i].instructions) {
-          std::println("  {}{}- {}{}", red, reset, red, instr, reset);
-        }
-      }
-      for (size_t i = 0; i < secondary.basic_blocks.size(); ++i) {
-        if (matched_secondary[i]) {
-          continue;
-        }
-        for (const auto& instr : secondary.basic_blocks[i].instructions) {
-          std::println("  {}{}+ {}{}", green, reset, green, instr, reset);
         }
       }
     }
@@ -348,7 +290,7 @@ int main(int argc, char* argv[]) {
     }
 
     binary_differ::compare_options diff_options;
-    diff_options.decode_instructions = options->decode_instructions;
+    diff_options.include_instructions = options->include_instructions;
     binary_differ differ(options->primary_path, options->secondary_path, diff_options);
     auto result = differ.compare();
     print_results(result, options->display);

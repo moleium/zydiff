@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <expected>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include "analyzer.h"
@@ -16,13 +18,36 @@ class binary_differ {
     instructions_changed,
   };
 
+  enum class edit_type : uint8_t {
+    unchanged,
+    changed,
+    added,
+    removed,
+  };
+
+  enum class detail_error : uint8_t {
+    instructions_unavailable,
+  };
+
+  struct instruction_edit {
+    edit_type type{edit_type::unchanged};
+    std::optional<std::string> primary;
+    std::optional<std::string> secondary;
+  };
+
+  struct block_diff {
+    std::optional<uint64_t> primary_address;
+    std::optional<uint64_t> secondary_address;
+    std::vector<instruction_edit> instructions;
+  };
+
   struct compare_options {
     double match_threshold{0.7};
     double fallback_threshold{0.5};
     uint64_t address_radius{0x20000};
     size_t pair_limit{5'000'000};
     size_t delta_limit{16};
-    bool decode_instructions{true};
+    bool include_instructions{true};
     size_t fallback_limit{4};
   };
 
@@ -53,6 +78,9 @@ class binary_differ {
   diff_result compare();
   static std::vector<block_match>
   match_blocks(const subroutine_analyzer::subroutine& primary, const subroutine_analyzer::subroutine& secondary);
+  static std::expected<std::vector<block_diff>, detail_error>
+  diff_blocks(const subroutine_analyzer::subroutine& primary, const subroutine_analyzer::subroutine& secondary);
+  static std::expected<std::vector<block_diff>, detail_error> diff_blocks(const matched_subroutine& match);
 
   private:
   struct match_index {

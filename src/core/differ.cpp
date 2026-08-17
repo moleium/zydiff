@@ -14,6 +14,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -171,6 +172,61 @@ namespace {
     return true;
   }
 
+  std::vector<size_t>
+  lcs_lengths(std::span<const uint64_t> primary, std::span<const uint64_t> secondary, bool reverse) {
+    std::vector<size_t> previous(secondary.size() + 1);
+    std::vector<size_t> current(secondary.size() + 1);
+    for (size_t i = 1; i <= primary.size(); ++i) {
+      for (size_t j = 1; j <= secondary.size(); ++j) {
+        const auto primary_key = reverse ? primary[primary.size() - i] : primary[i - 1];
+        const auto secondary_key = reverse ? secondary[secondary.size() - j] : secondary[j - 1];
+        current[j] = primary_key == secondary_key ? previous[j - 1] + 1 : std::max(previous[j], current[j - 1]);
+      }
+      std::swap(previous, current);
+      std::ranges::fill(current, 0);
+    }
+    return previous;
+  }
+
+  void align_keys(
+    std::span<const uint64_t> primary, std::span<const uint64_t> secondary, size_t primary_offset,
+    size_t secondary_offset, std::vector<std::pair<size_t, size_t>>& matches
+  ) {
+    if (primary.empty() || secondary.empty()) {
+      return;
+    }
+    if (primary.size() == 1) {
+      const auto match = std::ranges::find(secondary, primary.front());
+      if (match != secondary.end()) {
+        matches.emplace_back(primary_offset, secondary_offset + static_cast<size_t>(match - secondary.begin()));
+      }
+      return;
+    }
+
+    const auto primary_split = primary.size() / 2;
+    size_t secondary_split = 0;
+    {
+      const auto left = lcs_lengths(primary.first(primary_split), secondary, false);
+      const auto right = lcs_lengths(primary.subspan(primary_split), secondary, true);
+      size_t best_length = 0;
+      for (size_t i = 0; i <= secondary.size(); ++i) {
+        const auto length = left[i] + right[secondary.size() - i];
+        if (length > best_length) {
+          best_length = length;
+          secondary_split = i;
+        }
+      }
+    }
+
+    align_keys(
+      primary.first(primary_split), secondary.first(secondary_split), primary_offset, secondary_offset, matches
+    );
+    align_keys(
+      primary.subspan(primary_split), secondary.subspan(secondary_split), primary_offset + primary_split,
+      secondary_offset + secondary_split, matches
+    );
+  }
+
   binary_differ::change_type classify_change(
     const subroutine_analyzer::subroutine& primary, const subroutine_analyzer::subroutine& secondary, double similarity
   ) {
@@ -236,7 +292,7 @@ binary_differ::diff_result binary_differ::compare() {
       subroutine_analyzer analyzer(
         primary_text->data.data(), primary_text->data.size(),
         primary_->get_image_base() + primary_text->virtual_address, primary_->get_function_starts(),
-        options_.decode_instructions, analysis_workers, analysis_token, primary_ranges
+        options_.include_instructions, analysis_workers, analysis_token, primary_ranges
       );
       return analyzer.get_subroutines();
     } catch (...) {
@@ -250,7 +306,7 @@ binary_differ::diff_result binary_differ::compare() {
     subroutine_analyzer secondary_analyzer(
       secondary_text->data.data(), secondary_text->data.size(),
       secondary_->get_image_base() + secondary_text->virtual_address, secondary_->get_function_starts(),
-      options_.decode_instructions, analysis_workers, analysis_token, secondary_ranges
+      options_.include_instructions, analysis_workers, analysis_token, secondary_ranges
     );
     secondary_subroutines = secondary_analyzer.get_subroutines();
   } catch (...) {
@@ -280,9 +336,8 @@ binary_differ::diff_result binary_differ::compare() {
     const auto change = classify_change(
       primary_subroutines[match.primary_index], secondary_subroutines[match.secondary_index], match.similarity
     );
-    auto primary = std::move(primary_subroutines[match.primary_index]);
     result.matches.push_back({
-      .primary = std::move(primary),
+      .primary = std::move(primary_subroutines[match.primary_index]),
       .secondary = std::move(secondary_subroutines[match.secondary_index]),
       .change = change,
       .similarity = match.similarity,
@@ -381,6 +436,123 @@ std::vector<binary_differ::block_match> binary_differ::match_blocks(
     });
   }
   return matches;
+}
+
+std::expected<std::vector<binary_differ::block_diff>, binary_differ::detail_error> binary_differ::diff_blocks(
+  const subroutine_analyzer::subroutine& primary, const subroutine_analyzer::subroutine& secondary
+) {
+  const auto has_instructions = [](const auto& subroutine) {
+    return std::ranges::all_of(subroutine.basic_blocks, [](const auto& block) {
+      return block.instructions.size() == block.instruction_keys.size() &&
+             block.instructions.size() == block.match_keys.size();
+    });
+  };
+  if (!has_instructions(primary) || !has_instructions(secondary)) {
+    return std::unexpected(detail_error::instructions_unavailable);
+  }
+
+  const auto block_matches = match_blocks(primary, secondary);
+  std::vector<bool> matched_primary(primary.basic_blocks.size());
+  std::vector<bool> matched_secondary(secondary.basic_blocks.size());
+  std::vector<block_diff> result;
+  result.reserve(block_matches.size() + primary.basic_blocks.size() + secondary.basic_blocks.size());
+
+  for (const auto& match : block_matches) {
+    matched_primary[match.primary_index] = true;
+    matched_secondary[match.secondary_index] = true;
+    const auto& primary_block = primary.basic_blocks[match.primary_index];
+    const auto& secondary_block = secondary.basic_blocks[match.secondary_index];
+    std::vector<std::pair<size_t, size_t>> aligned_keys;
+    align_keys(primary_block.match_keys, secondary_block.match_keys, 0, 0, aligned_keys);
+    std::vector<instruction_edit> instructions;
+    instructions.reserve(primary_block.instructions.size() + secondary_block.instructions.size());
+    size_t primary_index = 0;
+    size_t secondary_index = 0;
+    for (const auto& [aligned_primary, aligned_secondary] : aligned_keys) {
+      while (primary_index < aligned_primary) {
+        instructions.push_back({
+          .type = edit_type::removed,
+          .primary = primary_block.instructions[primary_index++],
+          .secondary = std::nullopt,
+        });
+      }
+      while (secondary_index < aligned_secondary) {
+        instructions.push_back({
+          .type = edit_type::added,
+          .primary = std::nullopt,
+          .secondary = secondary_block.instructions[secondary_index++],
+        });
+      }
+      const auto changed =
+        primary_block.instruction_keys[aligned_primary] != secondary_block.instruction_keys[aligned_secondary] ||
+        primary_block.instructions[aligned_primary] != secondary_block.instructions[aligned_secondary];
+      instructions.push_back({
+        .type = changed ? edit_type::changed : edit_type::unchanged,
+        .primary = primary_block.instructions[aligned_primary],
+        .secondary =
+          changed ? std::optional<std::string>(secondary_block.instructions[aligned_secondary]) : std::nullopt,
+      });
+      primary_index = aligned_primary + 1;
+      secondary_index = aligned_secondary + 1;
+    }
+    while (primary_index < primary_block.instructions.size()) {
+      instructions.push_back({
+        .type = edit_type::removed,
+        .primary = primary_block.instructions[primary_index++],
+        .secondary = std::nullopt,
+      });
+    }
+    while (secondary_index < secondary_block.instructions.size()) {
+      instructions.push_back({
+        .type = edit_type::added,
+        .primary = std::nullopt,
+        .secondary = secondary_block.instructions[secondary_index++],
+      });
+    }
+    result.push_back({
+      .primary_address = primary_block.start_address,
+      .secondary_address = secondary_block.start_address,
+      .instructions = std::move(instructions),
+    });
+  }
+
+  for (size_t i = 0; i < primary.basic_blocks.size(); ++i) {
+    if (matched_primary[i]) {
+      continue;
+    }
+    std::vector<instruction_edit> instructions;
+    instructions.reserve(primary.basic_blocks[i].instructions.size());
+    for (const auto& text : primary.basic_blocks[i].instructions) {
+      instructions.push_back({.type = edit_type::removed, .primary = text, .secondary = std::nullopt});
+    }
+    result.push_back({
+      .primary_address = primary.basic_blocks[i].start_address,
+      .secondary_address = std::nullopt,
+      .instructions = std::move(instructions),
+    });
+  }
+
+  for (size_t i = 0; i < secondary.basic_blocks.size(); ++i) {
+    if (matched_secondary[i]) {
+      continue;
+    }
+    std::vector<instruction_edit> instructions;
+    instructions.reserve(secondary.basic_blocks[i].instructions.size());
+    for (const auto& text : secondary.basic_blocks[i].instructions) {
+      instructions.push_back({.type = edit_type::added, .primary = std::nullopt, .secondary = text});
+    }
+    result.push_back({
+      .primary_address = std::nullopt,
+      .secondary_address = secondary.basic_blocks[i].start_address,
+      .instructions = std::move(instructions),
+    });
+  }
+  return result;
+}
+
+std::expected<std::vector<binary_differ::block_diff>, binary_differ::detail_error>
+binary_differ::diff_blocks(const matched_subroutine& match) {
+  return diff_blocks(match.primary, match.secondary);
 }
 
 double

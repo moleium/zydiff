@@ -42,19 +42,19 @@ class subroutine_analyzer {
   subroutine_analyzer(const uint8_t* data, size_t size, uint64_t base_address);
   subroutine_analyzer(
     const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
-    bool decode_instructions = true
+    bool include_instructions = true
   );
   subroutine_analyzer(
     const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
-    bool decode_instructions, size_t worker_count
+    bool include_instructions, size_t worker_count
   );
   subroutine_analyzer(
     const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
-    bool decode_instructions, size_t worker_count, std::stop_token stop_token
+    bool include_instructions, size_t worker_count, std::stop_token stop_token
   );
   subroutine_analyzer(
     const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
-    bool decode_instructions, size_t worker_count, std::stop_token stop_token,
+    bool include_instructions, size_t worker_count, std::stop_token stop_token,
     std::span<const address_range> address_ranges
   );
 
@@ -78,7 +78,7 @@ class subroutine_analyzer {
   uint64_t base_address_;
   std::vector<uint64_t> known_starts_;
   std::vector<address_range> address_ranges_;
-  bool decode_instructions_{true};
+  bool include_instructions_{true};
   size_t worker_count_{1};
   std::stop_token stop_token_;
   std::stop_token worker_token_;

@@ -160,29 +160,29 @@ subroutine_analyzer::subroutine_analyzer(const uint8_t* data, size_t size, uint6
 
 subroutine_analyzer::subroutine_analyzer(
   const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
-  bool decode_instructions
-) : subroutine_analyzer(data, size, base_address, known_starts, decode_instructions, 1) {
+  bool include_instructions
+) : subroutine_analyzer(data, size, base_address, known_starts, include_instructions, 1) {
 }
 
 subroutine_analyzer::subroutine_analyzer(
   const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
-  bool decode_instructions, size_t worker_count
-) : subroutine_analyzer(data, size, base_address, known_starts, decode_instructions, worker_count, {}) {
+  bool include_instructions, size_t worker_count
+) : subroutine_analyzer(data, size, base_address, known_starts, include_instructions, worker_count, {}) {
 }
 
 subroutine_analyzer::subroutine_analyzer(
   const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
-  bool decode_instructions, size_t worker_count, std::stop_token stop_token
-) : subroutine_analyzer(data, size, base_address, known_starts, decode_instructions, worker_count, stop_token, {}) {
+  bool include_instructions, size_t worker_count, std::stop_token stop_token
+) : subroutine_analyzer(data, size, base_address, known_starts, include_instructions, worker_count, stop_token, {}) {
 }
 
 subroutine_analyzer::subroutine_analyzer(
   const uint8_t* data, size_t size, uint64_t base_address, std::span<const uint64_t> known_starts,
-  bool decode_instructions, size_t worker_count, std::stop_token stop_token,
+  bool include_instructions, size_t worker_count, std::stop_token stop_token,
   std::span<const address_range> address_ranges
 ) :
     data_(data), size_(size), base_address_(base_address), known_starts_(known_starts.begin(), known_starts.end()),
-    address_ranges_(address_ranges.begin(), address_ranges.end()), decode_instructions_(decode_instructions),
+    address_ranges_(address_ranges.begin(), address_ranges.end()), include_instructions_(include_instructions),
     worker_count_(std::max(size_t{1}, worker_count)), stop_token_(stop_token) {
   std::erase_if(known_starts_, [&](uint64_t address) {
     return address < base_address_ || address >= base_address_ + size_;
@@ -218,7 +218,7 @@ std::vector<subroutine_analyzer::subroutine> subroutine_analyzer::get_subroutine
         workers.emplace_back([&] {
           try {
             subroutine_analyzer analyzer(
-              data_, size_, base_address_, std::span<const uint64_t>{}, decode_instructions_, 1, stop_token_,
+              data_, size_, base_address_, std::span<const uint64_t>{}, include_instructions_, 1, stop_token_,
               address_ranges_
             );
             analyzer.worker_token_ = stop_source.get_token();
@@ -466,7 +466,7 @@ subroutine_analyzer::find_basic_blocks(uint64_t start_address, std::optional<uin
       const auto& decoded_instruction = decoder_.get_decoded_instruction();
       const auto* decoded_operands = decoder_.get_decoded_operands();
 
-      if (decode_instructions_) {
+      if (include_instructions_) {
         block.instructions.push_back(decoder_.get_instruction());
       }
       const auto key = instruction_key(decoded_instruction, decoded_operands, true, address_ranges_);
